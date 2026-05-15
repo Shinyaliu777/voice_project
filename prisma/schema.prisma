@@ -1,0 +1,238 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  folders      Folder[]
+  sessions     Session[]
+  flashcards   Flashcard[]
+  chatSessions ChatSession[]
+}
+
+model Folder {
+  id                   String   @id @default(cuid())
+  userId               String
+  name                 String
+  color                String?
+  sourceLang           String?
+  targetLang           String?
+  /// Serialized list of terms used as Soniox `context` for sessions in this folder
+  transcriptionContext String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions  Session[]
+  documents Document[]
+
+  @@index([userId])
+}
+
+model Session {
+  id               String   @id @default(cuid())
+  userId           String
+  folderId         String?
+  title            String   @default("")
+  sourceLang       String
+  targetLang       String
+  status           String   @default("idle") // idle/recording/uploading/ready/error
+  durationMs       Int?
+  audioPath        String?
+  audioContentType String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder       Folder?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  segments     Segment[]
+  speakerNames SpeakerName[]
+  audioChunks  AudioChunk[]
+  bookmarks    Bookmark[]
+  minutes      Minutes?
+  chatSessions ChatSession[]
+  flashcards   Flashcard[]
+
+  @@index([userId])
+  @@index([folderId])
+  @@index([createdAt])
+}
+
+model Segment {
+  id             String   @id @default(cuid())
+  sessionId      String
+  segmentIndex   Int
+  audioStartMs   Int
+  audioEndMs     Int
+  speakerId      Int?
+  sourceText     String   @db.Text
+  translatedText String?  @db.Text
+  confidence     Float?
+  isFinal        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, segmentIndex])
+  @@index([sessionId])
+}
+
+model SpeakerName {
+  id        String   @id @default(cuid())
+  sessionId String
+  speakerId Int
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, speakerId])
+}
+
+model AudioChunk {
+  id          String   @id @default(cuid())
+  sessionId   String
+  chunkIndex  Int
+  sizeBytes   Int
+  durationMs  Int
+  contentType String
+  storageKey  String
+  publicUrl   String
+  uploadedAt  DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, chunkIndex])
+  @@index([sessionId])
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  sessionId String
+  atMs      Int
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model Minutes {
+  id           String   @id @default(cuid())
+  sessionId    String   @unique
+  contentMd    String   @default("") @db.Text
+  sectionsJson Json?
+  model        String?
+  status       String   @default("pending") // pending/streaming/done/error
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model Document {
+  id               String   @id @default(cuid())
+  folderId         String
+  fileName         String
+  fileType         String
+  fileSize         Int
+  storageKey       String
+  blobUrl          String
+  extractionStatus String   @default("pending") // pending/processing/done/failed
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  folder         Folder          @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  extractedTerms ExtractedTerm[]
+
+  @@index([folderId])
+}
+
+model ExtractedTerm {
+  id         String   @id @default(cuid())
+  documentId String
+  term       String
+  definition String?
+  createdAt  DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  sessionId String?
+  title     String   @default("Untitled")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session  Session?      @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  messages ChatMessage[]
+
+  @@index([userId])
+  @@index([sessionId])
+}
+
+model ChatMessage {
+  id            String   @id @default(cuid())
+  chatSessionId String
+  role          String   // user/assistant/system
+  content       String   @db.Text
+  partsJson     Json?
+  createdAt     DateTime @default(now())
+
+  chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+
+  @@index([chatSessionId])
+}
+
+model Flashcard {
+  id              String   @id @default(cuid())
+  userId          String
+  sourceSessionId String?
+  sourceSegmentId String?
+  front           String   @db.Text
+  back            String   @db.Text
+  intervalDays    Int      @default(0)
+  easeFactor      Float    @default(2.5)
+  reviewCount     Int      @default(0)
+  nextReviewAt    DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session?          @relation(fields: [sourceSessionId], references: [id], onDelete: SetNull)
+  reviews FlashcardReview[]
+
+  @@index([userId])
+  @@index([nextReviewAt])
+}
+
+model FlashcardReview {
+  id          String   @id @default(cuid())
+  flashcardId String
+  rating      Int
+  reviewedAt  DateTime @default(now())
+
+  flashcard Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  @@index([flashcardId])
+}

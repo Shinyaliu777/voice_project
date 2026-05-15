@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+/uploads/
+/data/postgres/
+*.tsbuildinfo
+.vercel
+prisma/migrations/dev.db*
+next-env.d.ts
