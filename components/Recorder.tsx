@@ -2,7 +2,16 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Mic, Radio, RefreshCw, Share2, Square } from "lucide-react";
+import {
+  ArrowRight,
+  Loader2,
+  Mic,
+  Radio,
+  RefreshCw,
+  Share2,
+  Square,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -350,49 +359,52 @@ export function Recorder({
 
   if (state.status === "idle") {
     return (
-      <Card className="mx-auto w-full max-w-2xl">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Mic className="h-5 w-5" /> 新建录制
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-5">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <LanguagePicker
-              value={sourceLang}
-              onChange={setSourceLang}
-              label="源语言"
-              ariaLabel="源语言"
-            />
-            <LanguagePicker
-              value={targetLang}
-              onChange={setTargetLang}
-              label="目标语言"
-              ariaLabel="目标语言"
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <AudioSourcePicker value={audioSource} onChange={setAudioSource} />
-            <TranslationModePicker value={translationMode} onChange={setTranslationMode} />
-          </div>
-          <Separator />
-          <div className="flex justify-center pt-2">
-            <Button
-              size="lg"
-              onClick={startRecording}
-              disabled={starting}
-              className="h-14 rounded-full px-10 text-base"
+      <div className="flex w-full flex-col">
+        {/* Top controls — audio source / language pair / translation mode */}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <AudioSourcePicker value={audioSource} onChange={setAudioSource} />
+          <LanguagePicker
+            value={sourceLang}
+            onChange={setSourceLang}
+            ariaLabel="源语言"
+          />
+          <ArrowRight className="h-4 w-4 text-zinc-400" />
+          <LanguagePicker
+            value={targetLang}
+            onChange={setTargetLang}
+            ariaLabel="目标语言"
+          />
+          <TranslationModePicker value={translationMode} onChange={setTranslationMode} />
+        </div>
+
+        {/* Hero mic button */}
+        <div className="mt-24 flex flex-col items-center gap-6">
+          <button
+            type="button"
+            onClick={startRecording}
+            disabled={starting}
+            aria-label="开始录制"
+            className="bg-mic-gradient ring-mic-halo relative flex h-28 w-28 items-center justify-center rounded-full text-white transition-transform hover:scale-[1.03] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {starting ? (
+              <Loader2 className="h-10 w-10 animate-spin" />
+            ) : (
+              <Mic className="h-10 w-10" strokeWidth={1.5} />
+            )}
+          </button>
+          <div className="flex flex-col items-center gap-2 text-center">
+            <p className="text-sm text-zinc-600 dark:text-zinc-300">点击开始转录</p>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-xs text-zinc-400 transition-colors hover:text-zinc-600 dark:hover:text-zinc-300"
+              onClick={() => toast("上传音频：即将推出")}
             >
-              {starting ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
-              ) : (
-                <Mic className="h-5 w-5" />
-              )}
-              <span className="ml-2">开始录制</span>
-            </Button>
+              <Upload className="h-3 w-3" />
+              <span>或上传音频文件</span>
+            </button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     );
   }
 

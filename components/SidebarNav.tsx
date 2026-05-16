@@ -59,7 +59,7 @@ export function SidebarNav({
   return (
     <aside
       className={cn(
-        "flex h-screen w-60 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900",
+        "flex h-screen w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/60 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/60",
         className
       )}
     >
@@ -87,10 +87,10 @@ export function SidebarNav({
             const active = isLink && entry.href ? isActive(pathname, entry.href) : false;
 
             const className = cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+              "flex items-center gap-3 rounded-[10px] px-3 py-2 text-sm transition-colors",
               active
-                ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                ? "bg-zinc-200/70 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
+                : "text-zinc-700 hover:bg-zinc-200/40 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
             );
 
             return (

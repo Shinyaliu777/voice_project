@@ -12,12 +12,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-zinc-50">
-      <aside className="w-60 shrink-0 border-r border-zinc-200 bg-white">
-        <SidebarNav
-          userName={user.name ?? "Dev User"}
-          userInitial={(user.name ?? "D").trim().charAt(0).toUpperCase()}
-        />
-      </aside>
+      <SidebarNav
+        userName={user.name ?? "Dev User"}
+        userInitial={(user.name ?? "D").trim().charAt(0).toUpperCase()}
+      />
       <main className="flex flex-1 min-w-0 flex-col">
         <header className="sticky top-0 z-10 flex h-12 items-center gap-3 border-b border-zinc-200 bg-white/80 px-4 backdrop-blur">
           <SearchBar className="flex-1" />
