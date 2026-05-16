@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Folder as FolderIcon, Inbox } from "lucide-react";
+import { AppHeader } from "@/components/AppHeader";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 
@@ -56,14 +57,7 @@ export default async function HistoryPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          历史记录
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          管理你的所有录音和文件夹
-        </p>
-      </header>
+      <AppHeader title="历史记录" subtitle="管理你的所有录音和文件夹" />
 
       <section className="mb-10">
         <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-500">
@@ -72,7 +66,7 @@ export default async function HistoryPage() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           <Link
             href="/dashboard/history/folder/unfiled"
-            className="group flex items-start gap-3 rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-300 hover:shadow-sm"
+            className="group flex items-start gap-3 rounded-[10px] border border-zinc-100 bg-white p-4 transition hover:border-zinc-200 hover:bg-zinc-50"
           >
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-500">
               <Inbox className="h-5 w-5" />
@@ -89,7 +83,7 @@ export default async function HistoryPage() {
             <Link
               key={folder.id}
               href={`/dashboard/history/folder/${folder.id}`}
-              className="group flex items-start gap-3 rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-300 hover:shadow-sm"
+              className="group flex items-start gap-3 rounded-[10px] border border-zinc-100 bg-white p-4 transition hover:border-zinc-200 hover:bg-zinc-50"
             >
               <div
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
@@ -121,11 +115,11 @@ export default async function HistoryPage() {
           最近录音
         </h2>
         {sessions.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center text-sm text-zinc-500">
+          <div className="rounded-[10px] border border-dashed border-zinc-200 bg-white p-10 text-center text-sm text-zinc-500">
             还没有录音 — 从仪表板开始你的第一次会议
           </div>
         ) : (
-          <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white">
+          <div className="overflow-hidden rounded-[10px] border border-zinc-100 bg-white">
             <ul className="divide-y divide-zinc-100">
               {sessions.map((s) => {
                 const status = statusLabel(s.status);

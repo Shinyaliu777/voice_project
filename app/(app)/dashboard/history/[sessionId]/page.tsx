@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Bookmark as BookmarkIcon } from "lucide-react";
 import { AudioPlayer } from "@/components/AudioPlayer";
 import { TranscriptView } from "@/components/TranscriptView";
 import { MinutesView } from "@/components/MinutesView";
@@ -19,18 +19,18 @@ import type {
   SpeakerNameDTO,
 } from "@/lib/contracts";
 
-function statusLabel(status: string): { label: string; tone: string } {
+function statusLabel(status: string): { label: string; dot: string } {
   switch (status) {
     case "ready":
-      return { label: "已完成", tone: "bg-emerald-50 text-emerald-700" };
+      return { label: "已完成", dot: "bg-emerald-500" };
     case "recording":
-      return { label: "录音中", tone: "bg-rose-50 text-rose-700" };
+      return { label: "录音中", dot: "bg-rose-500" };
     case "uploading":
-      return { label: "上传中", tone: "bg-amber-50 text-amber-700" };
+      return { label: "上传中", dot: "bg-amber-500" };
     case "error":
-      return { label: "出错", tone: "bg-red-50 text-red-700" };
+      return { label: "出错", dot: "bg-red-500" };
     default:
-      return { label: "草稿", tone: "bg-zinc-100 text-zinc-700" };
+      return { label: "草稿", dot: "bg-zinc-400" };
   }
 }
 
@@ -46,6 +46,13 @@ function formatDuration(ms: number | null): string {
       .padStart(2, "0")}`;
   }
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatMs(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
 export default async function SessionDetailPage({
@@ -114,8 +121,8 @@ export default async function SessionDetailPage({
   const minutesContentMd = rawContentMd.trim().length > 0 ? rawContentMd : null;
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-8">
-      <div className="mb-4 flex items-center justify-between">
+    <div className="mx-auto max-w-6xl px-6 py-10">
+      <div className="mb-6">
         <Link
           href="/dashboard/history"
           className="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-700"
@@ -125,40 +132,64 @@ export default async function SessionDetailPage({
         </Link>
       </div>
 
-      <header className="mb-6 flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          {session.title || "未命名录音"}
-        </h1>
-        <span
-          className={`rounded-full px-2 py-0.5 text-xs font-medium ${status.tone}`}
-        >
-          {status.label}
-        </span>
-        <span className="rounded bg-zinc-100 px-2 py-0.5 text-xs font-mono text-zinc-600">
-          {session.sourceLang.toUpperCase()} →{" "}
-          {session.targetLang.toUpperCase()}
-        </span>
-        <span className="text-sm text-zinc-500">
-          时长 {formatDuration(session.durationMs)}
-        </span>
+      <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+            {session.title || "未命名录音"}
+          </h1>
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`inline-block h-1.5 w-1.5 rounded-full ${status.dot}`}
+                aria-hidden
+              />
+              <span>{status.label}</span>
+            </span>
+            <span className="font-mono">
+              {session.sourceLang.toUpperCase()} →{" "}
+              {session.targetLang.toUpperCase()}
+            </span>
+            <span>时长 {formatDuration(session.durationMs)}</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          <SessionActionsBar
+            sessionId={session.id}
+            audioUrl={audioUrl}
+            title={session.title || "未命名录音"}
+          />
+          <ShareDialog sessionId={session.id} title={session.title} />
+          <ExportMenu sessionId={session.id} />
+        </div>
       </header>
 
-      <div className="mb-6 flex flex-wrap items-center gap-2">
-        <SessionActionsBar
-          sessionId={session.id}
-          audioUrl={audioUrl}
-          title={session.title || "未命名录音"}
-        />
-        <ShareDialog sessionId={session.id} title={session.title} />
-        <ExportMenu sessionId={session.id} />
-      </div>
+      {bookmarks.length > 0 ? (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+          <span className="inline-flex items-center gap-1 text-zinc-600">
+            <BookmarkIcon className="h-3.5 w-3.5" aria-hidden />
+            <span>{bookmarks.length} 个书签</span>
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {bookmarks.slice(0, 12).map((b) => (
+              <a
+                key={b.id}
+                href={`#bookmark-${b.id}`}
+                title={b.note ?? formatMs(b.atMs)}
+                className="rounded-full bg-zinc-100 px-2 py-0.5 font-mono text-[11px] tabular-nums text-zinc-700 transition hover:bg-zinc-200"
+              >
+                {formatMs(b.atMs)}
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {audioUrl ? (
-        <div className="mb-6 rounded-xl border border-zinc-200 bg-white p-4">
+        <div className="mb-8 rounded-[10px] bg-zinc-50 p-4 dark:bg-zinc-900/40">
           <AudioPlayer src={audioUrl} bookmarks={bookmarks} />
         </div>
       ) : (
-        <div className="mb-6 rounded-xl border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
+        <div className="mb-8 rounded-[10px] border border-dashed border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950">
           暂无音频文件 — 录音可能仍在上传中
         </div>
       )}
@@ -172,22 +203,26 @@ export default async function SessionDetailPage({
 
         <TabsContent value="transcript">
           {segments.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center text-sm text-zinc-500">
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-900 dark:bg-zinc-950">
               还没有转录内容
             </div>
           ) : (
-            <TranscriptView
-              segments={segments}
-              speakerNames={speakerNames}
-            />
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-4 dark:border-zinc-900 dark:bg-zinc-950">
+              <TranscriptView
+                segments={segments}
+                speakerNames={speakerNames}
+              />
+            </div>
           )}
         </TabsContent>
 
         <TabsContent value="live-minutes">
           {minutesSections && minutesSections.length > 0 ? (
-            <MinutesView sections={minutesSections} />
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-6 dark:border-zinc-900 dark:bg-zinc-950">
+              <MinutesView sections={minutesSections} />
+            </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center text-sm text-zinc-500">
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-900 dark:bg-zinc-950">
               尚未生成 — 切换到下一个 tab 触发生成
             </div>
           )}
@@ -195,9 +230,11 @@ export default async function SessionDetailPage({
 
         <TabsContent value="minutes">
           {minutesContentMd ? (
-            <MinutesView contentMd={minutesContentMd} />
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-6 dark:border-zinc-900 dark:bg-zinc-950">
+              <MinutesView contentMd={minutesContentMd} />
+            </div>
           ) : (
-            <div className="flex flex-col items-center gap-4 rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center">
+            <div className="flex flex-col items-center gap-4 rounded-[10px] border border-zinc-100 bg-white p-10 text-center dark:border-zinc-900 dark:bg-zinc-950">
               <p className="text-sm text-zinc-500">
                 还没有生成会议纪要
               </p>

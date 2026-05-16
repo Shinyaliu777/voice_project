@@ -50,7 +50,9 @@ export function createRecorder(
 
 export class Recorder {
   // ---- config / callbacks ----
-  private readonly config: RecorderConfig;
+  // `config` is mutable so callers can attach a live-share token *after* the
+  // recorder has started (the user typically clicks "share" mid-recording).
+  private config: RecorderConfig;
   private readonly onEvent: (e: RecorderEvent) => void;
 
   // ---- state ----
@@ -187,6 +189,18 @@ export class Recorder {
     this.setState("ended");
   }
 
+  /**
+   * Attach (or clear) a live-share token mid-recording. While set, every
+   * utterance + finalized segment is fire-and-forget posted to the share
+   * channel so remote viewers see the same transcript.
+   */
+  setLiveShareToken(token: string | null | undefined): void {
+    this.config = {
+      ...this.config,
+      liveShareToken: token ?? undefined,
+    };
+  }
+
   destroy(): void {
     // Synchronous best-effort teardown without further events.
     try {
@@ -313,9 +327,13 @@ export class Recorder {
       initConfig.context = this.config.transcriptionContext;
     }
     if (wantTranslation) {
+      // Two-way: Soniox auto-detects which side is being spoken and translates
+      // into the other one in the same WS stream. Keeps both directions paired
+      // by translation_status on each token.
       initConfig.translation = {
-        type: "one_way",
-        target_language: this.config.targetLanguage,
+        type: "two_way",
+        language_a: this.config.sourceLanguage,
+        language_b: this.config.targetLanguage,
       };
     }
 
@@ -473,16 +491,75 @@ export class Recorder {
     const sourceText = (u.sourceFinal + u.sourcePending).trim();
     const translatedText = (u.transFinal + u.transPending).trim();
     if (!sourceText && !translatedText) return;
-    const utt: Utterance = {
-      id: u.id,
-      speakerId: u.speakerId,
-      startMs: u.startMs,
-      endMs: u.endMs,
-      sourceText,
-      translatedText,
-      isFinal,
-    };
-    this.onEvent({ utterance: utt });
+
+    // While the utterance is in-flight, render it as a single growing card.
+    // Only after <end> finalize do we split into sentence-level cards.
+    if (!isFinal) {
+      const utt: Utterance = {
+        id: u.id,
+        speakerId: u.speakerId,
+        startMs: u.startMs,
+        endMs: u.endMs,
+        sourceText,
+        translatedText,
+        isFinal: false,
+      };
+      this.onEvent({ utterance: utt });
+      this.pushLiveShare({ type: "utterance", utterance: utt });
+      return;
+    }
+
+    const sourceSentences = splitSentences(sourceText);
+    const transSentences = splitSentences(translatedText);
+    const canPair =
+      sourceSentences.length > 1 &&
+      sourceSentences.length === transSentences.length;
+
+    if (canPair) {
+      for (let i = 0; i < sourceSentences.length; i++) {
+        const utt: Utterance = {
+          id: i === 0 ? u.id : `${u.id}-s${i}`,
+          speakerId: u.speakerId,
+          startMs: u.startMs,
+          endMs: u.endMs,
+          sourceText: sourceSentences[i],
+          translatedText: transSentences[i] ?? "",
+          isFinal: true,
+        };
+        this.onEvent({ utterance: utt });
+        this.pushLiveShare({ type: "utterance", utterance: utt });
+      }
+    } else {
+      const utt: Utterance = {
+        id: u.id,
+        speakerId: u.speakerId,
+        startMs: u.startMs,
+        endMs: u.endMs,
+        sourceText,
+        translatedText,
+        isFinal: true,
+      };
+      this.onEvent({ utterance: utt });
+      this.pushLiveShare({ type: "utterance", utterance: utt });
+    }
+  }
+
+  /**
+   * Fire-and-forget push to the live-share channel. We deliberately do not
+   * await; transcript propagation must not block the recording pipeline. Push
+   * failures surface as a recoverable error but otherwise do nothing.
+   */
+  private pushLiveShare(payload: object): void {
+    const token = this.config.liveShareToken;
+    if (!token) return;
+    void fetch(`/api/live-share/${encodeURIComponent(token)}/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch((err) => {
+      this.emitError(err, "live_share_push_failed", true);
+    });
   }
 
   // ---- batched POST of finalized utterances as segments ----
@@ -544,6 +621,7 @@ export class Recorder {
       const segs = Array.isArray(body) ? body : body.segments ?? [];
       for (const seg of segs) {
         this.onEvent({ segment: seg });
+        this.pushLiveShare({ type: "segment", segment: seg });
         // Only run a client-side translation pass if Soniox didn't already
         // hand us a translation in the same WS stream.
         if (!seg.translatedText) {
@@ -806,6 +884,7 @@ export class Recorder {
       }
       const updated = (await res.json()) as SegmentDTO;
       this.onEvent({ segment: updated });
+      this.pushLiveShare({ type: "segment", segment: updated });
     } catch (err) {
       this.emitError(err, "segment_patch_failed", true);
     }
@@ -891,4 +970,23 @@ function parseSpeaker(s: unknown): number | undefined {
 
 async function safeText(res: Response): Promise<string> {
   try { return await res.text(); } catch { return ""; }
+}
+
+/**
+ * Split a finalized utterance text into sentence-sized pieces. Soniox emits
+ * <end> at prosody pauses, which can span multiple sentences when the speaker
+ * runs them together. Splitting client-side keeps the UI cards short and
+ * paired neatly with their translation.
+ */
+function splitSentences(text: string): string[] {
+  if (!text) return [];
+  // Match: a run of non-terminator chars optionally followed by one or more
+  // terminators (Latin .!? and CJK 。！？). Also capture a trailing fragment
+  // without a terminator.
+  const matches = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g);
+  if (!matches) {
+    const t = text.trim();
+    return t ? [t] : [];
+  }
+  return matches.map((s) => s.trim()).filter((s) => s.length > 0);
 }

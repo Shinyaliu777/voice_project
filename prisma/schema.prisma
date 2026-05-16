@@ -12,13 +12,18 @@ model User {
   email     String   @unique
   name      String?
   avatarUrl String?
+  /// Free-form per-user UI/notification/floating-window preferences (JSON blob)
+  settings  Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  folders      Folder[]
-  sessions     Session[]
-  flashcards   Flashcard[]
-  chatSessions ChatSession[]
+  folders           Folder[]
+  sessions          Session[]
+  flashcards        Flashcard[]
+  chatSessions      ChatSession[]
+  liveShareSessions LiveShareSession[]
+  polls             Poll[]
+  pollVotes         PollVote[]
 }
 
 model Folder {
@@ -54,15 +59,16 @@ model Session {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  folder       Folder?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  segments     Segment[]
-  speakerNames SpeakerName[]
-  audioChunks  AudioChunk[]
-  bookmarks    Bookmark[]
-  minutes      Minutes?
-  chatSessions ChatSession[]
-  flashcards   Flashcard[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder            Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  segments          Segment[]
+  speakerNames      SpeakerName[]
+  audioChunks       AudioChunk[]
+  bookmarks         Bookmark[]
+  minutes           Minutes?
+  chatSessions      ChatSession[]
+  flashcards        Flashcard[]
+  liveShareSessions LiveShareSession[]
 
   @@index([userId])
   @@index([folderId])
@@ -235,4 +241,60 @@ model FlashcardReview {
   flashcard Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
 
   @@index([flashcardId])
+}
+
+model LiveShareSession {
+  id        String   @id @default(cuid())
+  sessionId String
+  token     String   @unique
+  userId    String
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+}
+
+model Poll {
+  id          String   @id @default(cuid())
+  userId      String
+  question    String   @db.Text
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  options PollOption[]
+  votes   PollVote[]
+
+  @@index([userId])
+}
+
+model PollOption {
+  id     String @id @default(cuid())
+  pollId String
+  label  String
+  votes  Int    @default(0)
+
+  poll      Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  pollVotes PollVote[]
+
+  @@index([pollId])
+}
+
+model PollVote {
+  id        String   @id @default(cuid())
+  pollId    String
+  optionId  String
+  voterId   String
+  createdAt DateTime @default(now())
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  voter  User       @relation(fields: [voterId], references: [id], onDelete: Cascade)
+
+  @@unique([pollId, voterId])
+  @@index([pollId])
+  @@index([voterId])
 }

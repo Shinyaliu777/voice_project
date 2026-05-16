@@ -4,7 +4,6 @@ import * as React from "react";
 import { Bookmark, Copy, MoreHorizontal, Pencil, Trash2, UserCog } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
@@ -181,21 +180,29 @@ export function SegmentCard({
   };
 
   return (
-    <Card className="relative p-4">
+    <div
+      className={cn(
+        "group relative rounded-[10px] border border-zinc-100 bg-white p-4",
+        "dark:border-zinc-900 dark:bg-zinc-950"
+      )}
+    >
       <div className="flex items-start gap-3">
-        <span
-          className={cn("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", speakerSwatch(segment.speakerId))}
-          aria-hidden
-        />
         <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="mb-2 flex items-center gap-2 text-xs">
+            <span
+              className={cn(
+                "inline-block h-2 w-2 shrink-0 rounded-full",
+                speakerSwatch(segment.speakerId)
+              )}
+              aria-hidden
+            />
             <span className="font-medium text-zinc-700 dark:text-zinc-200">
               {speakerLabel}
             </span>
             <button
               type="button"
               onClick={() => onSeek?.(segment.audioStartMs)}
-              className="rounded px-1 font-mono tabular-nums hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              className="rounded px-1 font-mono tabular-nums text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
             >
               {formatMs(segment.audioStartMs)}
             </button>
@@ -210,7 +217,7 @@ export function SegmentCard({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={3}
-                className="text-sm"
+                className="text-base"
               />
               <div className="flex justify-end gap-2">
                 <Button
@@ -229,13 +236,13 @@ export function SegmentCard({
               </div>
             </div>
           ) : (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-900 dark:text-zinc-100">
+            <p className="whitespace-pre-wrap text-base leading-relaxed text-zinc-900 dark:text-zinc-100">
               {segment.sourceText}
             </p>
           )}
 
           {segment.translatedText ? (
-            <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1.5 whitespace-pre-wrap text-sm italic leading-relaxed text-zinc-500 dark:text-zinc-400">
               {segment.translatedText}
             </p>
           ) : null}
@@ -247,7 +254,7 @@ export function SegmentCard({
                 value={renameDraft}
                 onChange={(e) => setRenameDraft(e.target.value)}
                 placeholder="说话人名称"
-                className="flex h-8 flex-1 rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                className="flex h-8 flex-1 rounded-[10px] border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
               />
               <Button size="sm" onClick={saveCustomSpeaker}>
                 保存
@@ -266,7 +273,7 @@ export function SegmentCard({
           ) : null}
         </div>
 
-        <div className="absolute right-2 top-2">
+        <div className="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label="更多">
@@ -341,7 +348,7 @@ export function SegmentCard({
           </DropdownMenu>
         </div>
       </div>
-    </Card>
+    </div>
   );
 }
 

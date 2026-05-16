@@ -480,6 +480,12 @@ export interface RecorderConfig {
   enableSpeakerDiarization?: boolean;
   /** Soniox model id */
   sonioxModel?: string;
+  /**
+   * Optional live-share token. When set, the recorder fires utterance + segment
+   * payloads to /api/live-share/{token}/push so remote viewers see the
+   * transcript in real time. Fire-and-forget — failures do not block recording.
+   */
+  liveShareToken?: string;
 }
 
 export interface RecorderToken {

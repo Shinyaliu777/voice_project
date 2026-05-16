@@ -21,6 +21,9 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { SettingsDialog } from "@/components/SettingsDialog";
+import { InviteCodeCard } from "@/components/InviteCodeCard";
+import { UserMenuBadge } from "@/components/UserMenuBadge";
 
 export interface SidebarNavProps {
   userName?: string;
@@ -35,6 +38,8 @@ interface NavEntry {
   icon: React.ComponentType<{ className?: string }>;
   /** "button" entries are placeholders that don't navigate */
   kind?: "link" | "button";
+  /** Optional id for entries that should trigger custom actions */
+  action?: "settings";
 }
 
 const NAV_ENTRIES: NavEntry[] = [
@@ -44,7 +49,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: "对话", icon: MessageSquare, kind: "button" },
   { href: "/dashboard/shared-with-me", label: "共享", icon: Share2, kind: "link" },
   { href: "/dashboard/polls", label: "投票", icon: Vote, kind: "link" },
-  { label: "设置", icon: Settings, kind: "button" },
+  { label: "设置", icon: Settings, kind: "button", action: "settings" },
 ];
 
 export function SidebarNav({
@@ -55,6 +60,7 @@ export function SidebarNav({
 }: SidebarNavProps) {
   const pathname = usePathname() ?? "/";
   const initial = (userInitial ?? userName.charAt(0) ?? "U").toUpperCase();
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   return (
     <aside
@@ -69,7 +75,10 @@ export function SidebarNav({
           {initial}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{userName}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="truncate text-sm font-medium">{userName}</div>
+            <UserMenuBadge />
+          </div>
           <Badge variant="secondary" className="mt-0.5 h-5 px-1.5 text-[10px]">
             {subscription}
           </Badge>
@@ -86,22 +95,30 @@ export function SidebarNav({
             const isLink = entry.kind !== "button" && entry.href;
             const active = isLink && entry.href ? isActive(pathname, entry.href) : false;
 
-            const className = cn(
+            const itemClassName = cn(
               "flex items-center gap-3 rounded-[10px] px-3 py-2 text-sm transition-colors",
               active
                 ? "bg-zinc-200/70 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
                 : "text-zinc-700 hover:bg-zinc-200/40 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
             );
 
+            const onClickAction = entry.action === "settings"
+              ? () => setSettingsOpen(true)
+              : undefined;
+
             return (
               <li key={entry.label}>
                 {isLink && entry.href ? (
-                  <Link href={entry.href} className={className}>
+                  <Link href={entry.href} className={itemClassName}>
                     <Icon className="h-4 w-4 shrink-0" />
                     <span>{entry.label}</span>
                   </Link>
                 ) : (
-                  <button type="button" className={cn(className, "w-full text-left")}>
+                  <button
+                    type="button"
+                    className={cn(itemClassName, "w-full text-left")}
+                    onClick={onClickAction}
+                  >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span>{entry.label}</span>
                   </button>
@@ -111,6 +128,9 @@ export function SidebarNav({
           })}
         </ul>
       </nav>
+
+      {/* Invite reward card — sits between nav and the store badges */}
+      <InviteCodeCard />
 
       {/* App badges */}
       <div className="grid grid-cols-2 gap-2 px-3 pb-2">
@@ -165,6 +185,9 @@ export function SidebarNav({
           <LogOut className="h-4 w-4" />
         </Button>
       </div>
+
+      {/* Settings dialog (controlled by 设置 nav entry) */}
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </aside>
   );
 }

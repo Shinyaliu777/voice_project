@@ -3,6 +3,10 @@ import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 import { getStorageProvider } from "@/lib/storage";
 import { generateSessionWordDoc } from "@/lib/export/word";
+import {
+  PdfFontUnavailableError,
+  generateSessionPdf,
+} from "@/lib/export/pdf";
 import { toMinutesDTO, toSegmentDTO } from "@/lib/api/dto";
 
 const ALLOWED = new Set(["docx", "pdf", "audio"] as const);
@@ -88,11 +92,36 @@ export async function GET(
   }
 
   // format === "pdf"
-  return NextResponse.json(
-    {
-      error:
-        "PDF export needs a registered CJK font (思源黑体/Noto Sans CJK) before pdfkit can render Chinese. Use Word export for now.",
-    },
-    { status: 501 }
-  );
+  const minutes = session.minutes ? toMinutesDTO(session.minutes) : null;
+  const segments = session.segments.map(toSegmentDTO);
+  try {
+    const buffer = await generateSessionPdf(
+      session,
+      segments,
+      session.speakerNames,
+      minutes
+    );
+    return new Response(new Uint8Array(buffer), {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Length": String(buffer.byteLength),
+        "Content-Disposition": `attachment; filename="${baseName}.pdf"`,
+        "Cache-Control": "private, max-age=0",
+      },
+    });
+  } catch (err) {
+    if (err instanceof PdfFontUnavailableError) {
+      return NextResponse.json(
+        {
+          error:
+            "PDF export requires the Noto Sans SC font file. Download it from " +
+            "https://fonts.gstatic.com/s/notosanssc/v36/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYxNbPzS5HE.ttf " +
+            "and save it to public/fonts/NotoSansSC-Regular.ttf, then retry.",
+          fontPath: err.fontPath,
+        },
+        { status: 503 }
+      );
+    }
+    throw err;
+  }
 }

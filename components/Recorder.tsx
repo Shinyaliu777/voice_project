@@ -23,6 +23,7 @@ import { AudioSourcePicker } from "@/components/AudioSourcePicker";
 import { TranslationModePicker } from "@/components/TranslationModePicker";
 import { BookmarkInRecording } from "@/components/BookmarkInRecording";
 import { FloatingSubtitleToggle } from "@/components/FloatingSubtitleToggle";
+import { LiveShareDialog } from "@/components/LiveShareDialog";
 import { MinutesView } from "@/components/MinutesView";
 import { isChromeTranslatorAvailable } from "@/lib/translation/chrome-local";
 import { Recorder as AudioRecorder } from "@/lib/audio/recorder";
@@ -155,6 +156,7 @@ export function Recorder({
   const [state, dispatch] = React.useReducer(reducer, undefined, initialState);
   const recorderRef = React.useRef<AudioRecorder | null>(null);
   const [nowTs, setNowTs] = React.useState(0);
+  const [liveShareOpen, setLiveShareOpen] = React.useState(false);
 
   const [minutesSections, setMinutesSections] = React.useState<MinutesSection[]>([]);
   const [minutesStatus, setMinutesStatus] = React.useState<"idle" | "streaming" | "error">("idle");
@@ -440,7 +442,8 @@ export function Recorder({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => toast("实时分享：即将推出")}
+            onClick={() => setLiveShareOpen(true)}
+            disabled={!sessionId}
           >
             <Share2 className="h-4 w-4" />
             <span>实时分享</span>
@@ -451,6 +454,17 @@ export function Recorder({
           </Button>
         </div>
       </div>
+
+      {sessionId ? (
+        <LiveShareDialog
+          sessionId={sessionId}
+          open={liveShareOpen}
+          onOpenChange={setLiveShareOpen}
+          onTokenMinted={({ token }) => {
+            recorderRef.current?.setLiveShareToken(token);
+          }}
+        />
+      ) : null}
 
       {/* Utterance stream */}
       <UtteranceList
@@ -594,23 +608,24 @@ function UtteranceCard({
   showTranslation: boolean;
 }) {
   const stamp = formatElapsed(utterance.startMs);
+  const hasTranslation = showTranslation && !!utterance.translatedText;
   return (
     <div
       className={cn(
-        "rounded-lg border p-4 transition-colors",
+        "rounded-[10px] border p-4 transition-colors",
         isLive
           ? "border-rose-300 bg-rose-50/60 shadow-sm ring-1 ring-rose-200 dark:border-rose-800 dark:bg-rose-950/30 dark:ring-rose-900"
-          : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+          : "border-zinc-100 bg-white dark:border-zinc-900 dark:bg-zinc-950"
       )}
     >
-      <div className="mb-2 flex items-center justify-between gap-2 text-xs text-zinc-500">
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
         <div className="flex items-center gap-1.5">
           <span
-            className={cn("h-2 w-2 rounded-full", speakerColor(utterance.speakerId))}
+            className={cn("h-1.5 w-1.5 rounded-full", speakerColor(utterance.speakerId))}
             aria-hidden
           />
           <span>{speakerLabel(utterance.speakerId)}</span>
-          <span className="text-zinc-300">·</span>
+          <span className="text-zinc-300 dark:text-zinc-700">·</span>
           <span className="font-mono tabular-nums">{stamp}</span>
         </div>
         {isLive && (
@@ -620,18 +635,20 @@ function UtteranceCard({
           </Badge>
         )}
       </div>
+      {/* Source on top — secondary (muted, smaller) */}
       {utterance.sourceText ? (
-        <p
-          className={cn(
-            "text-base leading-relaxed text-zinc-900 dark:text-zinc-100",
-            isLive && "font-medium"
-          )}
-        >
+        <p className="text-sm leading-snug text-zinc-500 dark:text-zinc-400">
           {utterance.sourceText}
         </p>
       ) : null}
-      {showTranslation && utterance.translatedText ? (
-        <p className="mt-1.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+      {/* Translation on bottom — primary (dark, larger) */}
+      {hasTranslation ? (
+        <p
+          className={cn(
+            "mt-1 text-[17px] leading-snug text-zinc-900 dark:text-zinc-50",
+            isLive && "font-medium"
+          )}
+        >
           {utterance.translatedText}
         </p>
       ) : null}
