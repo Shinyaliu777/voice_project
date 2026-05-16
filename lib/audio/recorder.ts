@@ -18,10 +18,11 @@ import type {
   RecorderEvent,
   RecorderState,
   SegmentDTO,
+  Utterance,
 } from "../contracts";
 import type {
-  PendingTokenGroup,
   SonioxFrame,
+  UtteranceBuilder,
   WorkletInboundMessage,
 } from "./types";
 
@@ -71,17 +72,14 @@ export class Recorder {
   /** PCM frames buffered until the WS is open. */
   private pcmQueue: ArrayBuffer[] = [];
 
-  // ---- token / segment bookkeeping ----
-  private tokenCounter = 0;
+  // ---- utterance / segment bookkeeping ----
+  private utteranceCounter = 0;
   private segmentIndex = 0;
-  /** Tokens that arrived as non-final, keyed by speaker. */
-  private pendingTokens: Map<number | undefined, PendingTokenGroup> = new Map();
-  /** Final tokens not yet flushed to a segment, per speaker. */
-  private finalBuffers: Map<
-    number | undefined,
-    { startMs: number; endMs: number; text: string }
-  > = new Map();
-  private finalFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** In-flight utterances keyed by speakerId. One per active speaker until <end>. */
+  private currentUtterances: Map<number | undefined, UtteranceBuilder> = new Map();
+  /** Utterances finalized by <end>, queued for batched POST to /segments. */
+  private finalizeQueue: UtteranceBuilder[] = [];
+  private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ---- chunk upload pipeline ----
   private mediaRecorder: MediaRecorder | null = null;
@@ -157,7 +155,7 @@ export class Recorder {
     const recorderStopped = this.stopMediaRecorderAndDrain();
 
     // 2. Tell Soniox we're done sending audio (best-effort, ignore errors).
-    this.flushFinalSegmentsImmediate();
+    this.flushFinalizeQueueImmediate();
     try {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         // Soniox accepts an empty binary frame as end-of-stream.
@@ -212,9 +210,9 @@ export class Recorder {
     this.stream?.getTracks().forEach((t) => {
       try { t.stop(); } catch { /* ignore */ }
     });
-    if (this.finalFlushTimer) {
-      clearTimeout(this.finalFlushTimer);
-      this.finalFlushTimer = null;
+    if (this.finalizeTimer) {
+      clearTimeout(this.finalizeTimer);
+      this.finalizeTimer = null;
     }
   }
 
@@ -378,100 +376,153 @@ export class Recorder {
       return;
     }
     if (frame.finished) {
-      this.flushFinalSegmentsImmediate();
+      // Promote any in-flight utterances to finals before draining.
+      for (const u of this.currentUtterances.values()) {
+        if (u.sourceFinal || u.transFinal || u.sourcePending || u.transPending) {
+          // Treat lingering pending text as final on stream end.
+          u.sourceFinal += u.sourcePending;
+          u.transFinal += u.transPending;
+          u.sourcePending = "";
+          u.transPending = "";
+          this.emitUtterance(u, true);
+          this.finalizeQueue.push(u);
+        }
+      }
+      this.currentUtterances.clear();
+      this.flushFinalizeQueueImmediate();
       return;
     }
     if (!frame.tokens || frame.tokens.length === 0) return;
 
+    // Per-speaker pending replacements for this frame. Soniox sends the
+    // current in-flight guess as a snapshot, not as a delta, so we collect
+    // everything non-final from this frame and assign at the end.
+    const framePending = new Map<
+      number | undefined,
+      { source: string; trans: string }
+    >();
+    const finalizedThisFrame: UtteranceBuilder[] = [];
+    const touched = new Set<number | undefined>();
+
     for (const tok of frame.tokens) {
-      if (!tok.text) continue;
+      if (typeof tok.text !== "string") continue;
       const speakerId = parseSpeaker(tok.speaker);
-      const startMs = tok.start_ms ?? 0;
-      const endMs = tok.end_ms ?? startMs;
+      const startMs = typeof tok.start_ms === "number" ? tok.start_ms : 0;
+      const endMs = typeof tok.end_ms === "number" ? tok.end_ms : startMs;
       const isFinal = !!tok.is_final;
+      const status = (tok.translation_status ?? "").toLowerCase();
+      const isTranslation =
+        status !== "" && status !== "original" && status !== "none";
 
-      const tokenId = `t-${++this.tokenCounter}`;
-      this.onEvent({
-        token: {
-          id: tokenId,
-          text: tok.text,
-          isFinal,
+      let u = this.currentUtterances.get(speakerId);
+      if (!u) {
+        u = {
+          id: `u-${++this.utteranceCounter}`,
           speakerId,
-          isTranslation:
-            tok.translation_status !== undefined &&
-            tok.translation_status !== "original",
           startMs,
           endMs,
-        },
-      });
-
-      if (!isFinal) {
-        const group = this.pendingTokens.get(speakerId) ?? {
-          speakerId,
-          tokens: [],
+          sourceFinal: "",
+          sourcePending: "",
+          transFinal: "",
+          transPending: "",
         };
-        group.tokens.push({
-          id: tokenId,
-          text: tok.text,
-          startMs,
-          endMs,
-        });
-        this.pendingTokens.set(speakerId, group);
-      } else {
-        // Drop pending tokens for this speaker once we get a final.
-        this.pendingTokens.delete(speakerId);
-        const buf = this.finalBuffers.get(speakerId);
-        if (buf) {
-          buf.text += tok.text;
-          buf.endMs = endMs;
-        } else {
-          this.finalBuffers.set(speakerId, {
-            startMs,
-            endMs,
-            text: tok.text,
-          });
+        this.currentUtterances.set(speakerId, u);
+      }
+      u.endMs = Math.max(u.endMs, endMs);
+      touched.add(speakerId);
+
+      // <end> marks utterance boundary — never render it as text.
+      if (tok.text === "<end>") {
+        if (isFinal) {
+          finalizedThisFrame.push(u);
+          this.currentUtterances.delete(speakerId);
         }
-        this.scheduleFinalFlush();
+        continue;
+      }
+
+      if (isFinal) {
+        if (isTranslation) u.transFinal += tok.text;
+        else u.sourceFinal += tok.text;
+      } else {
+        const fp = framePending.get(speakerId) ?? { source: "", trans: "" };
+        if (isTranslation) fp.trans += tok.text;
+        else fp.source += tok.text;
+        framePending.set(speakerId, fp);
       }
     }
+
+    // Apply this frame's pending snapshot to each still-active utterance.
+    for (const speakerId of touched) {
+      const u = this.currentUtterances.get(speakerId);
+      if (!u) continue; // finalized this frame
+      const fp = framePending.get(speakerId);
+      u.sourcePending = fp?.source ?? "";
+      u.transPending = fp?.trans ?? "";
+      this.emitUtterance(u, false);
+    }
+
+    // Emit + queue POST for utterances that hit <end> this frame.
+    for (const u of finalizedThisFrame) {
+      this.emitUtterance(u, true);
+      this.finalizeQueue.push(u);
+    }
+    if (finalizedThisFrame.length > 0) this.scheduleFinalizeFlush();
   }
 
-  // ---- coalesce contiguous final tokens into a segment ----
+  private emitUtterance(u: UtteranceBuilder, isFinal: boolean): void {
+    const sourceText = (u.sourceFinal + u.sourcePending).trim();
+    const translatedText = (u.transFinal + u.transPending).trim();
+    if (!sourceText && !translatedText) return;
+    const utt: Utterance = {
+      id: u.id,
+      speakerId: u.speakerId,
+      startMs: u.startMs,
+      endMs: u.endMs,
+      sourceText,
+      translatedText,
+      isFinal,
+    };
+    this.onEvent({ utterance: utt });
+  }
 
-  private scheduleFinalFlush(): void {
-    if (this.finalFlushTimer) return;
-    this.finalFlushTimer = setTimeout(() => {
-      this.finalFlushTimer = null;
-      void this.flushFinalSegments();
+  // ---- batched POST of finalized utterances as segments ----
+
+  private scheduleFinalizeFlush(): void {
+    if (this.finalizeTimer) return;
+    this.finalizeTimer = setTimeout(() => {
+      this.finalizeTimer = null;
+      void this.flushFinalizeQueue();
     }, 250);
   }
 
-  private flushFinalSegmentsImmediate(): void {
-    if (this.finalFlushTimer) {
-      clearTimeout(this.finalFlushTimer);
-      this.finalFlushTimer = null;
+  private flushFinalizeQueueImmediate(): void {
+    if (this.finalizeTimer) {
+      clearTimeout(this.finalizeTimer);
+      this.finalizeTimer = null;
     }
-    void this.flushFinalSegments();
+    void this.flushFinalizeQueue();
   }
 
-  private async flushFinalSegments(): Promise<void> {
-    if (this.finalBuffers.size === 0) return;
-    const groups = [...this.finalBuffers.entries()];
-    this.finalBuffers.clear();
+  private async flushFinalizeQueue(): Promise<void> {
+    if (this.finalizeQueue.length === 0) return;
+    const utterances = this.finalizeQueue.splice(0, this.finalizeQueue.length);
 
-    const payload: { segments: CreateSegmentBody[] } = { segments: [] };
-    for (const [speakerId, buf] of groups) {
-      if (!buf.text.trim()) continue;
-      payload.segments.push({
+    const segments: CreateSegmentBody[] = [];
+    for (const u of utterances) {
+      const sourceText = u.sourceFinal.trim();
+      const translatedText = u.transFinal.trim();
+      if (!sourceText && !translatedText) continue;
+      segments.push({
         segmentIndex: this.segmentIndex++,
-        audioStartMs: buf.startMs,
-        audioEndMs: buf.endMs,
-        speakerId: speakerId,
-        sourceText: buf.text,
+        audioStartMs: u.startMs,
+        audioEndMs: u.endMs,
+        speakerId: u.speakerId,
+        sourceText: sourceText || translatedText,
+        translatedText: translatedText || null,
         isFinal: true,
       });
     }
-    if (payload.segments.length === 0) return;
+    if (segments.length === 0) return;
 
     try {
       const res = await fetch(
@@ -481,7 +532,7 @@ export class Recorder {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ segments }),
         }
       );
       if (!res.ok) {
@@ -493,11 +544,14 @@ export class Recorder {
       const segs = Array.isArray(body) ? body : body.segments ?? [];
       for (const seg of segs) {
         this.onEvent({ segment: seg });
-        // Kick off translation if needed.
-        if (this.config.translationMode === "local") {
-          void this.translateLocal(seg);
-        } else if (this.config.translationMode === "cloud") {
-          void this.translateCloud(seg);
+        // Only run a client-side translation pass if Soniox didn't already
+        // hand us a translation in the same WS stream.
+        if (!seg.translatedText) {
+          if (this.config.translationMode === "local") {
+            void this.translateLocal(seg);
+          } else if (this.config.translationMode === "cloud") {
+            void this.translateCloud(seg);
+          }
         }
       }
     } catch (err) {
@@ -786,9 +840,9 @@ export class Recorder {
   }
 
   private async shutdownInternal(): Promise<void> {
-    if (this.finalFlushTimer) {
-      clearTimeout(this.finalFlushTimer);
-      this.finalFlushTimer = null;
+    if (this.finalizeTimer) {
+      clearTimeout(this.finalizeTimer);
+      this.finalizeTimer = null;
     }
     try {
       this.workletNode?.disconnect();

@@ -37,8 +37,21 @@ export interface SonioxFrame {
   finished?: boolean;
 }
 
-/** Internal grouping of in-flight (non-final) tokens per speaker. */
-export interface PendingTokenGroup {
+/**
+ * Private builder the recorder uses to assemble one Soniox utterance from
+ * many frames before publishing as a contracts.Utterance.
+ *
+ * - `*Final`: text already locked in by `is_final: true` tokens; accumulates.
+ * - `*Pending`: snapshot of the current in-flight guess for that channel;
+ *   replaced wholesale on every Soniox frame, never appended.
+ */
+export interface UtteranceBuilder {
+  id: string;
   speakerId: number | undefined;
-  tokens: Array<{ id: string; text: string; startMs: number; endMs: number }>;
+  startMs: number;
+  endMs: number;
+  sourceFinal: string;
+  sourcePending: string;
+  transFinal: string;
+  transPending: string;
 }

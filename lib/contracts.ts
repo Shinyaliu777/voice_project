@@ -495,6 +495,21 @@ export interface RecorderToken {
   endMs: number;
 }
 
+/**
+ * One sentence/utterance with paired source + translation text. The recorder
+ * emits a stream of these — same `id` is reused while in-flight, and the
+ * isFinal flag flips to true when Soniox signals the utterance boundary.
+ */
+export interface Utterance {
+  id: string;
+  speakerId?: number;
+  startMs: number;
+  endMs: number;
+  sourceText: string;
+  translatedText: string;
+  isFinal: boolean;
+}
+
 export interface RecorderError {
   code: string;
   message: string;
@@ -503,6 +518,9 @@ export interface RecorderError {
 
 export interface RecorderEvent {
   state?: RecorderState;
+  /** Sentence-level state update; the new primary stream from Soniox. */
+  utterance?: Utterance;
+  /** @deprecated use `utterance` — kept for backwards compat with older UI. */
   token?: RecorderToken;
   segment?: SegmentDTO;
   error?: RecorderError;

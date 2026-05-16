@@ -26,30 +26,19 @@ import type {
   SessionDTO,
   SonioxTokenResponse,
   TranslationMode,
+  Utterance,
 } from "@/lib/contracts";
 
 // ------------------------------------------------------------------
 // State
 // ------------------------------------------------------------------
 
-interface LiveToken {
-  id: string;
-  text: string;
-  isFinal: boolean;
-  isTranslation: boolean;
-  speakerId?: number;
-  startMs: number;
-  endMs: number;
-}
-
 interface LiveState {
   status: RecorderState;
   level: number;
   startedAt: number | null;
-  pendingSource: LiveToken[];
-  pendingTranslation: LiveToken[];
-  finalSource: LiveToken[];
-  finalTranslation: LiveToken[];
+  order: string[];
+  byId: Record<string, Utterance>;
 }
 
 type Action =
@@ -57,17 +46,15 @@ type Action =
   | { type: "started"; at: number }
   | { type: "state"; value: RecorderState }
   | { type: "level"; value: number }
-  | { type: "token"; value: LiveToken };
+  | { type: "utterance"; value: Utterance };
 
 function initialState(): LiveState {
   return {
     status: "idle",
     level: 0,
     startedAt: null,
-    pendingSource: [],
-    pendingTranslation: [],
-    finalSource: [],
-    finalTranslation: [],
+    order: [],
+    byId: {},
   };
 }
 
@@ -81,18 +68,12 @@ function reducer(state: LiveState, action: Action): LiveState {
       return { ...state, status: action.value };
     case "level":
       return { ...state, level: action.value };
-    case "token": {
-      const tok = action.value;
-      const finalsKey = tok.isTranslation ? "finalTranslation" : "finalSource";
-      const pendingKey = tok.isTranslation ? "pendingTranslation" : "pendingSource";
-      if (tok.isFinal) {
-        const finals = state[finalsKey].filter((t) => t.id !== tok.id).concat(tok);
-        const pendings = state[pendingKey].filter((t) => t.id !== tok.id);
-        return { ...state, [finalsKey]: finals, [pendingKey]: pendings } as LiveState;
-      } else {
-        const others = state[pendingKey].filter((t) => t.id !== tok.id);
-        return { ...state, [pendingKey]: others.concat(tok) } as LiveState;
-      }
+    case "utterance": {
+      const u = action.value;
+      const existing = state.byId[u.id];
+      const byId = { ...state.byId, [u.id]: u };
+      const order = existing ? state.order : [...state.order, u.id];
+      return { ...state, byId, order };
     }
     default:
       return state;
@@ -129,18 +110,9 @@ function speakerColor(speakerId: number | undefined): string {
   return SPEAKER_DOT_COLORS[Math.abs(speakerId) % SPEAKER_DOT_COLORS.length];
 }
 
-function tailText(tokens: LiveToken[], maxChars = 160): string {
-  // Concatenate from newest backward until we hit maxChars.
-  const out: string[] = [];
-  let used = 0;
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const t = tokens[i].text.trim();
-    if (!t) continue;
-    if (used + t.length > maxChars && out.length > 0) break;
-    out.unshift(t);
-    used += t.length + 1;
-  }
-  return out.join(" ");
+function speakerLabel(speakerId: number | undefined): string {
+  if (speakerId == null) return "说话人";
+  return `Speaker ${speakerId}`;
 }
 
 // ------------------------------------------------------------------
@@ -175,7 +147,6 @@ export function Recorder({
   const recorderRef = React.useRef<AudioRecorder | null>(null);
   const [nowTs, setNowTs] = React.useState(0);
 
-  // Live minutes state
   const [minutesSections, setMinutesSections] = React.useState<MinutesSection[]>([]);
   const [minutesStatus, setMinutesStatus] = React.useState<"idle" | "streaming" | "error">("idle");
   const minutesAbortRef = React.useRef<AbortController | null>(null);
@@ -218,19 +189,8 @@ export function Recorder({
   const handleEvent = React.useCallback((event: RecorderEvent) => {
     if (event.state) dispatch({ type: "state", value: event.state });
     if (typeof event.level === "number") dispatch({ type: "level", value: event.level });
-    if (event.token) {
-      dispatch({
-        type: "token",
-        value: {
-          id: event.token.id,
-          text: event.token.text,
-          isFinal: event.token.isFinal,
-          isTranslation: Boolean(event.token.isTranslation),
-          speakerId: event.token.speakerId,
-          startMs: event.token.startMs,
-          endMs: event.token.endMs,
-        },
-      });
+    if (event.utterance) {
+      dispatch({ type: "utterance", value: event.utterance });
     }
     if (event.error) {
       toast.error(event.error.message || "Recorder error");
@@ -317,7 +277,6 @@ export function Recorder({
     }
   }, [sessionId, router]);
 
-  // Refresh live minutes via SSE stream
   const refreshLiveMinutes = React.useCallback(async () => {
     if (!sessionId || minutesStatus === "streaming") return;
     minutesAbortRef.current?.abort();
@@ -346,9 +305,7 @@ export function Recorder({
         const events = buf.split("\n\n");
         buf = events.pop() ?? "";
         for (const evt of events) {
-          const dataLine = evt
-            .split("\n")
-            .find((l) => l.startsWith("data:"));
+          const dataLine = evt.split("\n").find((l) => l.startsWith("data:"));
           if (!dataLine) continue;
           let payload: MinutesStreamEvent;
           try {
@@ -378,14 +335,11 @@ export function Recorder({
   elapsedRef.current = elapsedMs;
   const getCurrentMs = React.useCallback(() => elapsedRef.current, []);
 
-  const latestSourceText = React.useMemo(
-    () => tailText([...state.finalSource, ...state.pendingSource]),
-    [state.finalSource, state.pendingSource]
-  );
-  const latestTranslatedText = React.useMemo(
-    () => tailText([...state.finalTranslation, ...state.pendingTranslation]),
-    [state.finalTranslation, state.pendingTranslation]
-  );
+  // Latest utterance for the floating subtitle window.
+  const latestUtterance = React.useMemo<Utterance | null>(() => {
+    if (state.order.length === 0) return null;
+    return state.byId[state.order[state.order.length - 1]] ?? null;
+  }, [state.order, state.byId]);
 
   const showTranslation = translationMode !== "off";
   const recording = state.status === "recording";
@@ -442,9 +396,8 @@ export function Recorder({
     );
   }
 
-  // Recording UI
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
@@ -467,8 +420,8 @@ export function Recorder({
             />
           )}
           <FloatingSubtitleToggle
-            latestSourceText={latestSourceText}
-            latestTranslatedText={latestTranslatedText}
+            latestSourceText={latestUtterance?.sourceText ?? ""}
+            latestTranslatedText={latestUtterance?.translatedText ?? ""}
             recording={recording}
             showTranslation={showTranslation}
           />
@@ -487,20 +440,12 @@ export function Recorder({
         </div>
       </div>
 
-      {/* Live transcript */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <LiveColumn
-          title="原文"
-          finals={state.finalSource}
-          pending={state.pendingSource}
-        />
-        <LiveColumn
-          title="译文"
-          finals={state.finalTranslation}
-          pending={state.pendingTranslation}
-          muted
-        />
-      </div>
+      {/* Utterance stream */}
+      <UtteranceList
+        order={state.order}
+        byId={state.byId}
+        showTranslation={showTranslation}
+      />
 
       {/* Live minutes panel */}
       <Card>
@@ -570,87 +515,114 @@ function LevelMeter({ level }: { level: number }) {
   );
 }
 
-interface LiveColumnProps {
-  title: string;
-  finals: LiveToken[];
-  pending: LiveToken[];
-  muted?: boolean;
+interface UtteranceListProps {
+  order: string[];
+  byId: Record<string, Utterance>;
+  showTranslation: boolean;
 }
 
-function LiveColumn({ title, finals, pending, muted }: LiveColumnProps) {
-  const finalsBySpeaker = React.useMemo(() => groupConsecutive(finals), [finals]);
-  const pendingBySpeaker = React.useMemo(() => groupConsecutive(pending), [pending]);
+function UtteranceList({ order, byId, showTranslation }: UtteranceListProps) {
+  const scrollerRef = React.useRef<HTMLDivElement | null>(null);
+  // Auto-scroll to bottom on new utterance.
+  React.useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [order.length, byId]);
+
+  if (order.length === 0) {
+    return (
+      <Card className="min-h-[50vh]">
+        <CardContent className="flex h-full items-center justify-center py-12">
+          <p className="text-sm text-zinc-400">正在监听…</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Pick the live (last non-final) utterance.
+  let liveId: string | null = null;
+  for (let i = order.length - 1; i >= 0; i--) {
+    const u = byId[order[i]];
+    if (u && !u.isFinal) {
+      liveId = u.id;
+      break;
+    }
+  }
+
   return (
-    <Card className="min-h-[50vh]">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm text-zinc-500 dark:text-zinc-400">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {finalsBySpeaker.map((group, idx) => (
-          <SpeakerLine key={`final-${idx}`} group={group} muted={muted} />
-        ))}
-        {pendingBySpeaker.map((group, idx) => (
-          <SpeakerLine
-            key={`pending-${idx}`}
-            group={group}
-            muted={muted}
-            pending
+    <div
+      ref={scrollerRef}
+      className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto"
+    >
+      {order.map((id) => {
+        const u = byId[id];
+        if (!u) return null;
+        const isLive = u.id === liveId;
+        return (
+          <UtteranceCard
+            key={u.id}
+            utterance={u}
+            isLive={isLive}
+            showTranslation={showTranslation}
           />
-        ))}
-        {finals.length === 0 && pending.length === 0 ? (
-          <div className="py-6 text-center text-sm text-zinc-400">
-            正在监听…
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
+        );
+      })}
+    </div>
   );
 }
 
-interface TokenGroup {
-  speakerId?: number;
-  tokens: LiveToken[];
-}
-
-function groupConsecutive(tokens: LiveToken[]): TokenGroup[] {
-  const sorted = [...tokens].sort((a, b) => a.startMs - b.startMs);
-  const out: TokenGroup[] = [];
-  for (const t of sorted) {
-    const last = out[out.length - 1];
-    if (last && last.speakerId === t.speakerId) {
-      last.tokens.push(t);
-    } else {
-      out.push({ speakerId: t.speakerId, tokens: [t] });
-    }
-  }
-  return out;
-}
-
-function SpeakerLine({
-  group,
-  muted,
-  pending,
+function UtteranceCard({
+  utterance,
+  isLive,
+  showTranslation,
 }: {
-  group: TokenGroup;
-  muted?: boolean;
-  pending?: boolean;
+  utterance: Utterance;
+  isLive: boolean;
+  showTranslation: boolean;
 }) {
-  const text = group.tokens.map((t) => t.text).join(" ");
+  const stamp = formatElapsed(utterance.startMs);
   return (
-    <div className="flex items-start gap-2">
-      <span
-        className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", speakerColor(group.speakerId))}
-        aria-hidden
-      />
-      <p
-        className={cn(
-          "flex-1 text-sm leading-relaxed",
-          muted ? "text-zinc-600 dark:text-zinc-300" : "text-zinc-900 dark:text-zinc-100",
-          pending && "opacity-60"
+    <div
+      className={cn(
+        "rounded-lg border p-4 transition-colors",
+        isLive
+          ? "border-rose-300 bg-rose-50/60 shadow-sm ring-1 ring-rose-200 dark:border-rose-800 dark:bg-rose-950/30 dark:ring-rose-900"
+          : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+      )}
+    >
+      <div className="mb-2 flex items-center justify-between gap-2 text-xs text-zinc-500">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={cn("h-2 w-2 rounded-full", speakerColor(utterance.speakerId))}
+            aria-hidden
+          />
+          <span>{speakerLabel(utterance.speakerId)}</span>
+          <span className="text-zinc-300">·</span>
+          <span className="font-mono tabular-nums">{stamp}</span>
+        </div>
+        {isLive && (
+          <Badge variant="destructive" className="gap-1 px-2 py-0">
+            <Radio className="h-3 w-3 animate-pulse" />
+            LIVE
+          </Badge>
         )}
-      >
-        {text}
-      </p>
+      </div>
+      {utterance.sourceText ? (
+        <p
+          className={cn(
+            "text-base leading-relaxed text-zinc-900 dark:text-zinc-100",
+            isLive && "font-medium"
+          )}
+        >
+          {utterance.sourceText}
+        </p>
+      ) : null}
+      {showTranslation && utterance.translatedText ? (
+        <p className="mt-1.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+          {utterance.translatedText}
+        </p>
+      ) : null}
     </div>
   );
 }
