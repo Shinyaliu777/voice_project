@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Mic, Radio, Share2, Square } from "lucide-react";
+import { Loader2, Mic, Radio, RefreshCw, Share2, Square } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,10 +12,15 @@ import { cn } from "@/lib/utils";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { AudioSourcePicker } from "@/components/AudioSourcePicker";
 import { TranslationModePicker } from "@/components/TranslationModePicker";
+import { BookmarkInRecording } from "@/components/BookmarkInRecording";
+import { FloatingSubtitleToggle } from "@/components/FloatingSubtitleToggle";
+import { MinutesView } from "@/components/MinutesView";
 import { isChromeTranslatorAvailable } from "@/lib/translation/chrome-local";
 import { Recorder as AudioRecorder } from "@/lib/audio/recorder";
 import type {
   AudioSource,
+  MinutesSection,
+  MinutesStreamEvent,
   RecorderEvent,
   RecorderState,
   SessionDTO,
@@ -41,7 +46,6 @@ interface LiveState {
   status: RecorderState;
   level: number;
   startedAt: number | null;
-  /** Map of token id -> token for the in-flight (non-final) source tokens */
   pendingSource: LiveToken[];
   pendingTranslation: LiveToken[];
   finalSource: LiveToken[];
@@ -81,14 +85,11 @@ function reducer(state: LiveState, action: Action): LiveState {
       const tok = action.value;
       const finalsKey = tok.isTranslation ? "finalTranslation" : "finalSource";
       const pendingKey = tok.isTranslation ? "pendingTranslation" : "pendingSource";
-
       if (tok.isFinal) {
-        // Promote to finals (replace if same id existed in pending or finals)
         const finals = state[finalsKey].filter((t) => t.id !== tok.id).concat(tok);
         const pendings = state[pendingKey].filter((t) => t.id !== tok.id);
         return { ...state, [finalsKey]: finals, [pendingKey]: pendings } as LiveState;
       } else {
-        // Update or insert in pending
         const others = state[pendingKey].filter((t) => t.id !== tok.id);
         return { ...state, [pendingKey]: others.concat(tok) } as LiveState;
       }
@@ -128,20 +129,29 @@ function speakerColor(speakerId: number | undefined): string {
   return SPEAKER_DOT_COLORS[Math.abs(speakerId) % SPEAKER_DOT_COLORS.length];
 }
 
+function tailText(tokens: LiveToken[], maxChars = 160): string {
+  // Concatenate from newest backward until we hit maxChars.
+  const out: string[] = [];
+  let used = 0;
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i].text.trim();
+    if (!t) continue;
+    if (used + t.length > maxChars && out.length > 0) break;
+    out.unshift(t);
+    used += t.length + 1;
+  }
+  return out.join(" ");
+}
+
 // ------------------------------------------------------------------
 // Component
 // ------------------------------------------------------------------
 
 export interface RecorderComponentProps {
-  /** Default source language */
   defaultSourceLang?: string;
-  /** Default target language */
   defaultTargetLang?: string;
-  /** Default audio source */
   defaultAudioSource?: AudioSource;
-  /** Default title for the session (else current locale string) */
   defaultTitle?: string;
-  /** Optional callback when a session is created */
   onSessionCreated?: (session: SessionDTO) => void;
 }
 
@@ -164,6 +174,11 @@ export function Recorder({
   const [state, dispatch] = React.useReducer(reducer, undefined, initialState);
   const recorderRef = React.useRef<AudioRecorder | null>(null);
   const [nowTs, setNowTs] = React.useState(0);
+
+  // Live minutes state
+  const [minutesSections, setMinutesSections] = React.useState<MinutesSection[]>([]);
+  const [minutesStatus, setMinutesStatus] = React.useState<"idle" | "streaming" | "error">("idle");
+  const minutesAbortRef = React.useRef<AbortController | null>(null);
 
   // Decide initial translation mode based on Chrome availability.
   React.useEffect(() => {
@@ -193,11 +208,10 @@ export function Recorder({
     return () => {
       const rec = recorderRef.current;
       if (rec) {
-        rec.stop().catch(() => {
-          /* swallow */
-        });
+        rec.stop().catch(() => {});
         recorderRef.current = null;
       }
+      minutesAbortRef.current?.abort();
     };
   }, []);
 
@@ -226,9 +240,10 @@ export function Recorder({
   const startRecording = React.useCallback(async () => {
     if (starting || state.status === "recording") return;
     setStarting(true);
+    setMinutesSections([]);
+    setMinutesStatus("idle");
     try {
       const title = defaultTitle ?? new Date().toLocaleString();
-      // 1. Create the session
       const sessionResp = await fetch("/api/transcription/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -239,7 +254,6 @@ export function Recorder({
       setSessionId(session.id);
       onSessionCreated?.(session);
 
-      // 2. Mint a Soniox token
       const tokenResp = await fetch("/api/soniox-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -248,7 +262,6 @@ export function Recorder({
       if (!tokenResp.ok) throw new Error(`Failed to mint token (${tokenResp.status})`);
       const token = (await tokenResp.json()) as SonioxTokenResponse;
 
-      // 3. Create the recorder
       const rec = new AudioRecorder(
         {
           sessionId: session.id,
@@ -261,7 +274,6 @@ export function Recorder({
         handleEvent
       );
 
-      // 4. Start it
       recorderRef.current = rec;
       await rec.start();
       dispatch({ type: "started", at: Date.now() });
@@ -270,9 +282,7 @@ export function Recorder({
       toast.error(msg);
       const rec = recorderRef.current;
       if (rec) {
-        await rec.stop().catch(() => {
-          /* ignore */
-        });
+        await rec.stop().catch(() => {});
         recorderRef.current = null;
       }
       dispatch({ type: "reset" });
@@ -294,6 +304,7 @@ export function Recorder({
   const stopRecording = React.useCallback(async () => {
     const rec = recorderRef.current;
     const id = sessionId;
+    minutesAbortRef.current?.abort();
     try {
       if (rec) await rec.stop();
     } catch (err) {
@@ -306,8 +317,78 @@ export function Recorder({
     }
   }, [sessionId, router]);
 
+  // Refresh live minutes via SSE stream
+  const refreshLiveMinutes = React.useCallback(async () => {
+    if (!sessionId || minutesStatus === "streaming") return;
+    minutesAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    minutesAbortRef.current = ctrl;
+    setMinutesStatus("streaming");
+
+    try {
+      const resp = await fetch(`/api/sessions/${sessionId}/minutes/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language: targetLang }),
+        signal: ctrl.signal,
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error(`Failed to stream minutes (${resp.status})`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const collected: MinutesSection[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const events = buf.split("\n\n");
+        buf = events.pop() ?? "";
+        for (const evt of events) {
+          const dataLine = evt
+            .split("\n")
+            .find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          let payload: MinutesStreamEvent;
+          try {
+            payload = JSON.parse(dataLine.slice(5).trim());
+          } catch {
+            continue;
+          }
+          if (payload.type === "section_confirmed" || payload.type === "section_pending") {
+            collected.push(payload.section);
+            setMinutesSections([...collected]);
+          } else if (payload.type === "error") {
+            throw new Error(payload.message);
+          }
+        }
+      }
+      setMinutesStatus("idle");
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      setMinutesStatus("error");
+      toast.error(err instanceof Error ? err.message : "纪要生成失败");
+    }
+  }, [sessionId, targetLang, minutesStatus]);
+
   const elapsedMs =
     state.startedAt != null && nowTs > 0 ? Math.max(0, nowTs - state.startedAt) : 0;
+  const elapsedRef = React.useRef(elapsedMs);
+  elapsedRef.current = elapsedMs;
+  const getCurrentMs = React.useCallback(() => elapsedRef.current, []);
+
+  const latestSourceText = React.useMemo(
+    () => tailText([...state.finalSource, ...state.pendingSource]),
+    [state.finalSource, state.pendingSource]
+  );
+  const latestTranslatedText = React.useMemo(
+    () => tailText([...state.finalTranslation, ...state.pendingTranslation]),
+    [state.finalTranslation, state.pendingTranslation]
+  );
+
+  const showTranslation = translationMode !== "off";
+  const recording = state.status === "recording";
 
   // ----------------------------------------------------------------
   // Render
@@ -363,7 +444,7 @@ export function Recorder({
 
   // Recording UI
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
@@ -378,6 +459,19 @@ export function Recorder({
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline">→ {targetLang.toUpperCase()}</Badge>
+          {sessionId && (
+            <BookmarkInRecording
+              sessionId={sessionId}
+              getCurrentMs={getCurrentMs}
+              disabled={!recording}
+            />
+          )}
+          <FloatingSubtitleToggle
+            latestSourceText={latestSourceText}
+            latestTranslatedText={latestTranslatedText}
+            recording={recording}
+            showTranslation={showTranslation}
+          />
           <Button
             variant="outline"
             size="sm"
@@ -407,6 +501,43 @@ export function Recorder({
           muted
         />
       </div>
+
+      {/* Live minutes panel */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+          <CardTitle className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+            实时纪要
+            {minutesStatus === "streaming" && (
+              <span className="ml-2 text-xs text-zinc-500">生成中…</span>
+            )}
+            {minutesStatus === "error" && (
+              <span className="ml-2 text-xs text-rose-500">出错，点刷新重试</span>
+            )}
+          </CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={refreshLiveMinutes}
+            disabled={!sessionId || minutesStatus === "streaming"}
+          >
+            {minutesStatus === "streaming" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            <span>刷新纪要</span>
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {minutesSections.length === 0 ? (
+            <p className="py-2 text-sm text-zinc-500">
+              录一段后点"刷新纪要"基于当前转录生成要点（消耗 LLM 配额）。
+            </p>
+          ) : (
+            <MinutesView sections={minutesSections} />
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -447,7 +578,6 @@ interface LiveColumnProps {
 }
 
 function LiveColumn({ title, finals, pending, muted }: LiveColumnProps) {
-  // Group finals by speakerId (consecutive groups)
   const finalsBySpeaker = React.useMemo(() => groupConsecutive(finals), [finals]);
   const pendingBySpeaker = React.useMemo(() => groupConsecutive(pending), [pending]);
   return (
