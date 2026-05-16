@@ -5,16 +5,11 @@ import { getStorageProvider } from "@/lib/storage";
 import { getLLMProvider } from "@/lib/llm";
 import { buildTermExtractPrompt } from "@/lib/prompts/term-extract";
 import { toExtractedTermDTO } from "@/lib/api/dto";
+import { parseDocument } from "@/lib/document-parser";
 import type {
   ExtractTermsResponse,
   ExtractedTermDTO,
 } from "@/lib/contracts";
-
-const TEXT_TYPES = new Set([
-  "text/plain",
-  "text/markdown",
-  "text/x-markdown",
-]);
 
 const CONTEXT_CAP = 500;
 
@@ -88,27 +83,17 @@ function parseTermsJson(raw: string): Array<{
     );
 }
 
-async function streamToString(
+async function streamToBuffer(
   body: ReadableStream<Uint8Array>
-): Promise<string> {
+): Promise<Buffer> {
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
-  let total = 0;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    if (value) {
-      chunks.push(value);
-      total += value.byteLength;
-    }
+    if (value) chunks.push(value);
   }
-  const buf = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    buf.set(c, off);
-    off += c.byteLength;
-  }
-  return new TextDecoder("utf-8").decode(buf);
+  return Buffer.concat(chunks);
 }
 
 function dedupTerms(existing: string, additions: string[]): string {
@@ -165,57 +150,23 @@ export async function POST(
     );
   }
 
-  // Mark as processing (best-effort)
   try {
     await prisma.document.update({
       where: { id: doc.id },
       data: { extractionStatus: "processing" },
     });
   } catch {
-    // ignore
+    // ignore status update failures; we'll still try the work
   }
 
-  const fileType = (doc.fileType || "").toLowerCase();
-  const isText = TEXT_TYPES.has(fileType);
-
-  if (!isText) {
-    // Phase 1: PDF / DOCX / PPTX / etc. parsing is not yet implemented.
-    await prisma.document.update({
-      where: { id: doc.id },
-      data: { extractionStatus: "failed" },
-    });
-    const note = `Term extraction for ${doc.fileType} is not implemented in Phase 1 — falls back to manual entry.`;
-    let placeholder: ExtractedTermDTO;
-    try {
-      const row = await prisma.extractedTerm.create({
-        data: {
-          documentId: doc.id,
-          term: doc.fileName,
-          definition: note,
-        },
-      });
-      placeholder = toExtractedTermDTO(row);
-    } catch {
-      placeholder = {
-        id: "placeholder",
-        term: doc.fileName,
-        definition: note,
-      };
-    }
-    const resp: ExtractTermsResponse = {
-      documentId: doc.id,
-      status: "failed",
-      terms: [placeholder],
-    };
-    return NextResponse.json(resp);
-  }
-
-  // Text/markdown path
+  // 1. Fetch the file from storage and parse it to text.
   const storage = getStorageProvider();
-  let raw: string;
+  let parsedText: string;
   try {
     const got = await storage.getStream(doc.storageKey);
-    raw = await streamToString(got.body);
+    const buffer = await streamToBuffer(got.body);
+    const result = await parseDocument(buffer, doc.fileType, doc.fileName);
+    parsedText = result.text.trim();
   } catch (err) {
     await prisma.document.update({
       where: { id: doc.id },
@@ -223,15 +174,32 @@ export async function POST(
     });
     return NextResponse.json(
       {
+        documentId: doc.id,
+        status: "failed",
+        terms: [],
         error:
-          err instanceof Error ? err.message : "Failed to read document",
-      },
+          err instanceof Error ? err.message : "Failed to read or parse document",
+      } satisfies ExtractTermsResponse & { error: string },
       { status: 502 }
     );
   }
 
+  if (!parsedText) {
+    await prisma.document.update({
+      where: { id: doc.id },
+      data: { extractionStatus: "failed" },
+    });
+    const resp: ExtractTermsResponse = {
+      documentId: doc.id,
+      status: "failed",
+      terms: [],
+    };
+    return NextResponse.json(resp);
+  }
+
+  // 2. Run the term extractor LLM.
   const messages = buildTermExtractPrompt({
-    documentText: raw,
+    documentText: parsedText,
     language: folder.targetLang ?? folder.sourceLang ?? undefined,
   });
 
@@ -255,7 +223,7 @@ export async function POST(
 
   const parsedTerms = parseTermsJson(llmRaw);
 
-  // Persist terms, update doc status, update folder context.
+  // 3. Persist terms, mark done, update folder context.
   const created = await prisma.$transaction(async (tx) => {
     await tx.extractedTerm.deleteMany({ where: { documentId: doc.id } });
     const rows: ExtractedTermDTO[] = [];

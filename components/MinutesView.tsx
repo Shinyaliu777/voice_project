@@ -1,4 +1,8 @@
+"use client";
+
 import * as React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { MinutesSection } from "@/lib/contracts";
@@ -26,7 +30,12 @@ function formatRange(startMs?: number, endMs?: number): string | null {
   return format(endMs!);
 }
 
-export function MinutesView({ sections, contentMd, loading, className }: MinutesViewProps) {
+export function MinutesView({
+  sections,
+  contentMd,
+  loading,
+  className,
+}: MinutesViewProps) {
   if (loading) {
     return (
       <div className={cn("flex flex-col gap-3", className)}>
@@ -73,8 +82,88 @@ export function MinutesView({ sections, contentMd, loading, className }: Minutes
 
   if (contentMd) {
     return (
-      <div className={cn("prose-sm max-w-none text-sm leading-relaxed", className)}>
-        <MarkdownLite source={contentMd} />
+      <div
+        className={cn(
+          "max-w-none text-sm leading-relaxed text-zinc-800 dark:text-zinc-200",
+          className
+        )}
+      >
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            h1: ({ ...p }) => (
+              <h1 className="mt-6 text-xl font-semibold tracking-tight" {...p} />
+            ),
+            h2: ({ ...p }) => (
+              <h2 className="mt-5 text-lg font-semibold tracking-tight" {...p} />
+            ),
+            h3: ({ ...p }) => (
+              <h3 className="mt-4 text-base font-semibold tracking-tight" {...p} />
+            ),
+            p: ({ ...p }) => <p className="my-2 leading-relaxed" {...p} />,
+            ul: ({ ...p }) => (
+              <ul className="my-2 list-disc space-y-1 pl-5" {...p} />
+            ),
+            ol: ({ ...p }) => (
+              <ol className="my-2 list-decimal space-y-1 pl-5" {...p} />
+            ),
+            li: ({ ...p }) => <li className="leading-relaxed" {...p} />,
+            blockquote: ({ ...p }) => (
+              <blockquote
+                className="my-3 border-l-2 border-zinc-300 pl-3 italic text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                {...p}
+              />
+            ),
+            code: ({ className: codeClassName, children, ...p }) => {
+              const inline = !codeClassName;
+              if (inline) {
+                return (
+                  <code
+                    className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs dark:bg-zinc-800"
+                    {...p}
+                  >
+                    {children}
+                  </code>
+                );
+              }
+              return (
+                <code
+                  className="block overflow-x-auto rounded-md bg-zinc-100 p-3 font-mono text-xs dark:bg-zinc-800"
+                  {...p}
+                >
+                  {children}
+                </code>
+              );
+            },
+            table: ({ ...p }) => (
+              <div className="my-3 overflow-x-auto">
+                <table className="w-full border-collapse text-xs" {...p} />
+              </div>
+            ),
+            th: ({ ...p }) => (
+              <th
+                className="border-b border-zinc-200 px-2 py-1 text-left font-semibold dark:border-zinc-800"
+                {...p}
+              />
+            ),
+            td: ({ ...p }) => (
+              <td
+                className="border-b border-zinc-100 px-2 py-1 dark:border-zinc-900"
+                {...p}
+              />
+            ),
+            a: ({ ...p }) => (
+              <a
+                className="text-blue-600 underline hover:text-blue-700 dark:text-blue-400"
+                target="_blank"
+                rel="noreferrer"
+                {...p}
+              />
+            ),
+          }}
+        >
+          {contentMd}
+        </ReactMarkdown>
       </div>
     );
   }
@@ -89,134 +178,6 @@ export function MinutesView({ sections, contentMd, loading, className }: Minutes
       还没有生成会议纪要。
     </div>
   );
-}
-
-// ------------------------------------------------------------------
-// Tiny markdown parser (headings, bold, italic, lists, paragraphs)
-// ------------------------------------------------------------------
-
-interface MarkdownLiteProps {
-  source: string;
-}
-
-function MarkdownLite({ source }: MarkdownLiteProps) {
-  const blocks = React.useMemo(() => parseBlocks(source), [source]);
-  return (
-    <div className="flex flex-col gap-3">
-      {blocks.map((block, i) => renderBlock(block, i))}
-    </div>
-  );
-}
-
-type Block =
-  | { type: "h1" | "h2" | "h3"; text: string }
-  | { type: "ul"; items: string[] }
-  | { type: "p"; text: string };
-
-function parseBlocks(src: string): Block[] {
-  const lines = src.replace(/\r\n/g, "\n").split("\n");
-  const blocks: Block[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const raw = lines[i];
-    const line = raw.trim();
-    if (line === "") {
-      i += 1;
-      continue;
-    }
-    let m: RegExpExecArray | null;
-    if ((m = /^###\s+(.*)$/.exec(line))) {
-      blocks.push({ type: "h3", text: m[1] });
-      i += 1;
-      continue;
-    }
-    if ((m = /^##\s+(.*)$/.exec(line))) {
-      blocks.push({ type: "h2", text: m[1] });
-      i += 1;
-      continue;
-    }
-    if ((m = /^#\s+(.*)$/.exec(line))) {
-      blocks.push({ type: "h1", text: m[1] });
-      i += 1;
-      continue;
-    }
-    if (/^[-*]\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^[-*]\s+/, ""));
-        i += 1;
-      }
-      blocks.push({ type: "ul", items });
-      continue;
-    }
-    // paragraph: consume until blank line
-    const para: string[] = [line];
-    i += 1;
-    while (i < lines.length && lines[i].trim() !== "" && !/^[-*]\s+/.test(lines[i].trim()) && !/^#{1,3}\s+/.test(lines[i].trim())) {
-      para.push(lines[i].trim());
-      i += 1;
-    }
-    blocks.push({ type: "p", text: para.join(" ") });
-  }
-  return blocks;
-}
-
-function renderBlock(block: Block, key: number): React.ReactNode {
-  switch (block.type) {
-    case "h1":
-      return (
-        <h1 key={key} className="text-xl font-semibold tracking-tight">
-          {renderInline(block.text)}
-        </h1>
-      );
-    case "h2":
-      return (
-        <h2 key={key} className="text-lg font-semibold tracking-tight">
-          {renderInline(block.text)}
-        </h2>
-      );
-    case "h3":
-      return (
-        <h3 key={key} className="text-base font-semibold tracking-tight">
-          {renderInline(block.text)}
-        </h3>
-      );
-    case "ul":
-      return (
-        <ul key={key} className="list-disc space-y-1 pl-5">
-          {block.items.map((it, i) => (
-            <li key={i}>{renderInline(it)}</li>
-          ))}
-        </ul>
-      );
-    case "p":
-    default:
-      return (
-        <p key={key} className="leading-relaxed">
-          {renderInline(block.text)}
-        </p>
-      );
-  }
-}
-
-function renderInline(text: string): React.ReactNode {
-  // Split on **bold** and _italic_ tokens. Bold wins on overlap.
-  const out: React.ReactNode[] = [];
-  const regex = /(\*\*[^*]+\*\*)|(_[^_]+_)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  let key = 0;
-  while ((m = regex.exec(text))) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    if (m[1]) {
-      out.push(<strong key={key++}>{m[1].slice(2, -2)}</strong>);
-    } else if (m[2]) {
-      out.push(<em key={key++}>{m[2].slice(1, -1)}</em>);
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
 }
 
 export default MinutesView;

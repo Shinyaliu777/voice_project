@@ -11,24 +11,9 @@
 import type { ParseResult } from "./index";
 import { assertWithinSizeCap, toNodeBuffer } from "./index";
 
-// Local ambient declaration for the pdf-parse subpath import.
-declare module "pdf-parse/lib/pdf-parse.js" {
-  interface PdfParseResult {
-    numpages: number;
-    numrender: number;
-    info: unknown;
-    metadata: unknown;
-    version: string;
-    text: string;
-  }
-  function pdfParse(
-    dataBuffer: Buffer,
-    options?: Record<string, unknown>
-  ): Promise<PdfParseResult>;
-  export = pdfParse;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// Subpath import: the package root has a debug-fixture side effect at import
+// time, the `/lib/pdf-parse.js` entry skips it. Ambient types live at
+// types/pdf-parse-lib.d.ts.
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
 export async function parsePdf(
