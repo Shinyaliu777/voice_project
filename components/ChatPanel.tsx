@@ -128,6 +128,9 @@ export function ChatPanel(props: Props) {
   );
   const [input, setInput] = React.useState("");
   const [sending, setSending] = React.useState(false);
+  // Composer toggles. "thinking" maps to DeepSeek's reasoning model
+  // (deepseek-v4-pro). "webSearch" is not implemented — disabled UI.
+  const [thinking, setThinking] = React.useState(false);
 
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
   React.useEffect(() => {
@@ -215,6 +218,10 @@ export function ChatPanel(props: Props) {
           body: JSON.stringify({
             chatSessionId: sid,
             message: trimmed,
+            // "思考" toggle switches to DeepSeek's reasoning model
+            // (deepseek-v4-pro). Backend honors this only when configured to
+            // use DeepSeek; other LLM providers ignore the flag.
+            ...(thinking ? { model: "deepseek-v4-pro" } : {}),
             ...(replaceAssistantId ? { regenerate: true } : {}),
           }),
         });
@@ -537,16 +544,44 @@ export function ChatPanel(props: Props) {
           </div>
 
           <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1">
-                <Sparkles className="h-3 w-3" /> Basic
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+                  thinking
+                    ? "bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-500"
+                    : "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+                )}
+                title={thinking ? "已切换到推理模型" : "默认模型 (deepseek-v4-flash)"}
+              >
+                <Sparkles className="h-3 w-3" /> {thinking ? "Reasoning" : "Basic"}
               </span>
-              <span className="inline-flex items-center gap-1 opacity-50">
+              <button
+                type="button"
+                disabled
+                title="联网搜索（暂未实现，详见 docs/FUTURE_FEATURES.md）"
+                className="inline-flex cursor-not-allowed items-center gap-1 rounded-full px-2 py-0.5 opacity-40"
+              >
                 <Globe className="h-3 w-3" /> 联网
-              </span>
-              <span className="inline-flex items-center gap-1 opacity-50">
+              </button>
+              <button
+                type="button"
+                onClick={() => setThinking((v) => !v)}
+                disabled={sending}
+                title={
+                  thinking
+                    ? "已开启：DeepSeek V4-Pro 推理模型（更慢、更深入）"
+                    : "开启 = 切到推理模型（适合复杂问题）"
+                }
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors",
+                  thinking
+                    ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                    : "hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                )}
+              >
                 <Lightbulb className="h-3 w-3" /> 思考
-              </span>
+              </button>
             </div>
             <span>Enter 发送 · Shift+Enter 换行</span>
           </div>
