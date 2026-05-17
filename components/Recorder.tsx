@@ -174,12 +174,11 @@ export function Recorder({
   const [audioSource, setAudioSource] = React.useState<AudioSource>(defaultAudioSource);
   const [sourceLang, setSourceLang] = React.useState(defaultSourceLang);
   const [targetLang, setTargetLang] = React.useState(defaultTargetLang);
-  // Default to "cloud" = Soniox two-way in WS. It costs Soniox minutes but
-  // works with just a SONIOX_API_KEY and gives the inline / paired UX from
-  // the very first sentence. Switch to "local" only after confirming
-  // chrome://flags/#translation-api is enabled and the language model is
-  // downloaded.
-  const [translationMode, setTranslationMode] = React.useState<TranslationMode>("cloud");
+  // Default to "local" = Chrome's on-device Translator API. No Soniox
+  // translation budget used; works the moment the language model is
+  // downloaded. The picker auto-falls-back to "cloud" if Chrome's API
+  // isn't available (see effect below).
+  const [translationMode, setTranslationMode] = React.useState<TranslationMode>("local");
   const [localSetupOpen, setLocalSetupOpen] = React.useState(false);
 
   // Intercept "local" picks: probe Chrome's Translator API first. If the
