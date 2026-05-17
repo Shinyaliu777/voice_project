@@ -1,11 +1,28 @@
 "use client";
 
 import * as React from "react";
-import { Radio, WifiOff } from "lucide-react";
+import { Radio } from "lucide-react";
+import { toast, Toaster } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { SegmentDTO, SessionDTO, Utterance } from "@/lib/contracts";
+import {
+  LANGUAGE_NAMES,
+  SUPPORTED_LANGUAGES,
+  type SegmentDTO,
+  type SessionDTO,
+  type SupportedLanguage,
+  type Utterance,
+} from "@/lib/contracts";
+import {
+  getOrCreateViewerTranslator,
+  hasViewerTranslatorAPI,
+  probeViewerTranslator,
+} from "@/lib/viewer-translator";
+import {
+  FONT_SCALE_VALUES,
+  type FontScalePreset,
+  ViewerToolbar,
+} from "@/components/ViewerToolbar";
 
 interface LiveShareViewerProps {
   token: string;
@@ -20,14 +37,19 @@ interface DisplayUtterance {
   speakerId: number | null;
   startMs: number;
   sourceText: string;
+  /** Translation from host (Soniox cloud or Chrome local). Untouched. */
   translatedText: string;
+  /** Viewer's locally re-translated copy of `sourceText`. */
+  viewerTranslatedText: string | null;
   isFinal: boolean;
 }
 
 type Action =
   | { type: "init"; segments: SegmentDTO[]; session: SessionDTO }
   | { type: "utterance"; value: Utterance }
-  | { type: "segment"; value: SegmentDTO; utteranceId?: string };
+  | { type: "segment"; value: SegmentDTO; utteranceId?: string }
+  | { type: "viewerTranslation"; id: string; sourceText: string; text: string }
+  | { type: "clearViewerTranslations" };
 
 interface State {
   title: string;
@@ -56,6 +78,7 @@ function fromSegment(seg: SegmentDTO): DisplayUtterance {
     startMs: seg.audioStartMs,
     sourceText: seg.sourceText ?? "",
     translatedText: seg.translatedText ?? "",
+    viewerTranslatedText: null,
     isFinal: !!seg.isFinal,
   };
 }
@@ -67,6 +90,7 @@ function fromUtterance(u: Utterance): DisplayUtterance {
     startMs: u.startMs,
     sourceText: u.sourceText ?? "",
     translatedText: u.translatedText ?? "",
+    viewerTranslatedText: null,
     isFinal: !!u.isFinal,
   };
 }
@@ -110,6 +134,21 @@ function replaceSlotKey(
   return { ...state, byId, order };
 }
 
+/** When updating an existing slot, preserve the viewer's already-computed
+ *  re-translation if the source text didn't change. Avoids flicker on the
+ *  growing live card while we wait for the next debounced translate. */
+function mergeViewerTranslation(
+  prev: DisplayUtterance | undefined,
+  next: DisplayUtterance
+): DisplayUtterance {
+  if (!prev) return next;
+  if (!prev.viewerTranslatedText) return next;
+  if (prev.sourceText === next.sourceText) {
+    return { ...next, viewerTranslatedText: prev.viewerTranslatedText };
+  }
+  return next;
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "init": {
@@ -127,49 +166,58 @@ function reducer(state: State, action: Action): State {
       };
     }
     case "utterance": {
-      const next = fromUtterance(action.value);
+      const incoming = fromUtterance(action.value);
       // 1. Already mapped to a finalized segment slot — route there.
-      const mappedSegId = state.utteranceToSegment[next.id];
+      const mappedSegId = state.utteranceToSegment[incoming.id];
       if (mappedSegId && state.byId[mappedSegId]) {
-        return replaceSlotKey(state, mappedSegId, mappedSegId, {
-          ...next,
+        const prev = state.byId[mappedSegId];
+        const merged = mergeViewerTranslation(prev, {
+          ...incoming,
           id: mappedSegId,
         });
+        return replaceSlotKey(state, mappedSegId, mappedSegId, merged);
       }
       // 2. Slot already exists under this exact utterance id — update in place.
-      if (state.byId[next.id]) {
-        return { ...state, byId: { ...state.byId, [next.id]: next } };
+      if (state.byId[incoming.id]) {
+        const prev = state.byId[incoming.id];
+        const merged = mergeViewerTranslation(prev, incoming);
+        return { ...state, byId: { ...state.byId, [incoming.id]: merged } };
       }
       // 3. Same speaker + similar startMs — merge into the existing slot rather
       //    than appending a duplicate card. (Soniox sometimes re-emits an
       //    utterance under a new id after a sentence split + immediate
       //    re-finalize; without this we get two cards at the same timestamp.)
-      const neighborId = findSlotByPosition(state, next.speakerId, next.startMs);
+      const neighborId = findSlotByPosition(
+        state,
+        incoming.speakerId,
+        incoming.startMs
+      );
       if (neighborId) {
         // Merge: prefer the longer source text, prefer existing translation if
         // the new one is empty, otherwise take the new one.
         const prev = state.byId[neighborId];
         const merged: DisplayUtterance = {
           id: neighborId,
-          speakerId: next.speakerId,
-          startMs: Math.min(prev.startMs, next.startMs),
+          speakerId: incoming.speakerId,
+          startMs: Math.min(prev.startMs, incoming.startMs),
           sourceText:
-            next.sourceText.length >= prev.sourceText.length
-              ? next.sourceText
+            incoming.sourceText.length >= prev.sourceText.length
+              ? incoming.sourceText
               : prev.sourceText,
           translatedText:
-            next.translatedText.length >= prev.translatedText.length
-              ? next.translatedText
+            incoming.translatedText.length >= prev.translatedText.length
+              ? incoming.translatedText
               : prev.translatedText,
-          isFinal: prev.isFinal || next.isFinal,
+          viewerTranslatedText: prev.viewerTranslatedText,
+          isFinal: prev.isFinal || incoming.isFinal,
         };
         return { ...state, byId: { ...state.byId, [neighborId]: merged } };
       }
       // 4. Brand new slot.
       return {
         ...state,
-        byId: { ...state.byId, [next.id]: next },
-        order: [...state.order, next.id],
+        byId: { ...state.byId, [incoming.id]: incoming },
+        order: [...state.order, incoming.id],
       };
     }
     case "segment": {
@@ -177,7 +225,9 @@ function reducer(state: State, action: Action): State {
       const uid = action.utteranceId;
       // 1. Segment knows its utterance — swap that slot's key in place.
       if (uid && state.byId[uid]) {
-        const ns = replaceSlotKey(state, uid, next.id, next);
+        const prev = state.byId[uid];
+        const merged = mergeViewerTranslation(prev, next);
+        const ns = replaceSlotKey(state, uid, next.id, merged);
         return {
           ...ns,
           utteranceToSegment: { ...ns.utteranceToSegment, [uid]: next.id },
@@ -185,17 +235,28 @@ function reducer(state: State, action: Action): State {
       }
       // 2. Segment id already known (e.g. PATCH update) — update in place.
       if (state.byId[next.id]) {
-        return { ...state, byId: { ...state.byId, [next.id]: next } };
+        const prev = state.byId[next.id];
+        const merged = mergeViewerTranslation(prev, next);
+        return { ...state, byId: { ...state.byId, [next.id]: merged } };
       }
       // 3. No mapping but a card already exists at this (speaker, startMs) —
       //    treat it as the same utterance and swap the slot key.
-      const neighborId = findSlotByPosition(state, next.speakerId, next.startMs);
+      const neighborId = findSlotByPosition(
+        state,
+        next.speakerId,
+        next.startMs
+      );
       if (neighborId) {
-        const ns = replaceSlotKey(state, neighborId, next.id, next);
+        const prev = state.byId[neighborId];
+        const merged = mergeViewerTranslation(prev, next);
+        const ns = replaceSlotKey(state, neighborId, next.id, merged);
         return uid
           ? {
               ...ns,
-              utteranceToSegment: { ...ns.utteranceToSegment, [uid]: next.id },
+              utteranceToSegment: {
+                ...ns.utteranceToSegment,
+                [uid]: next.id,
+              },
             }
           : ns;
       }
@@ -206,6 +267,34 @@ function reducer(state: State, action: Action): State {
         ? { ...state.utteranceToSegment, [uid]: next.id }
         : state.utteranceToSegment;
       return { ...state, byId, order, utteranceToSegment };
+    }
+    case "viewerTranslation": {
+      const u = state.byId[action.id];
+      if (!u) return state;
+      // Only write back if the source text we translated still matches the
+      // current source on the card — otherwise we'd splash stale text.
+      if (u.sourceText !== action.sourceText) return state;
+      if (u.viewerTranslatedText === action.text) return state;
+      return {
+        ...state,
+        byId: {
+          ...state.byId,
+          [action.id]: { ...u, viewerTranslatedText: action.text },
+        },
+      };
+    }
+    case "clearViewerTranslations": {
+      const byId: Record<string, DisplayUtterance> = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(state.byId)) {
+        if (v.viewerTranslatedText != null) {
+          byId[k] = { ...v, viewerTranslatedText: null };
+          changed = true;
+        } else {
+          byId[k] = v;
+        }
+      }
+      return changed ? { ...state, byId } : state;
     }
     default:
       return state;
@@ -243,54 +332,163 @@ function formatElapsed(ms: number): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
+const THEME_STORAGE_KEY = "lecsync.viewer.theme";
+const FONT_SCALE_STORAGE_KEY = "lecsync.viewer.fontScale";
+
+function readInitialTheme(): "light" | "dark" {
+  if (typeof window === "undefined") return "light";
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark") return stored;
+  } catch {
+    /* ignore */
+  }
+  if (typeof window.matchMedia === "function") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+  return "light";
+}
+
+function readInitialFontScale(): FontScalePreset {
+  if (typeof window === "undefined") return "M";
+  try {
+    const stored = window.localStorage.getItem(FONT_SCALE_STORAGE_KEY);
+    if (stored === "S" || stored === "M" || stored === "L" || stored === "XL") {
+      return stored;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "M";
+}
+
+function isSupportedLanguage(v: string): v is SupportedLanguage {
+  return (SUPPORTED_LANGUAGES as readonly string[]).includes(v);
+}
+
+function readInitialViewerLang(fallback: string): SupportedLanguage {
+  if (typeof window !== "undefined") {
+    try {
+      const url = new URL(window.location.href);
+      const q = url.searchParams.get("to");
+      if (q && isSupportedLanguage(q)) return q;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (isSupportedLanguage(fallback)) return fallback;
+  return "en";
+}
+
+const STALE_THRESHOLD_MS = 30_000;
+
 export function LiveShareViewer({
   token,
   initialTitle,
   sourceLang,
   targetLang,
 }: LiveShareViewerProps) {
-  const [state, dispatch] = React.useReducer(reducer, undefined, () => initial(initialTitle));
+  const [state, dispatch] = React.useReducer(
+    reducer,
+    undefined,
+    () => initial(initialTitle)
+  );
   const [connected, setConnected] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const scrollerRef = React.useRef<HTMLDivElement | null>(null);
+  const [lastEventAt, setLastEventAt] = React.useState<number | null>(null);
+  const [now, setNow] = React.useState<number>(() => Date.now());
 
+  const [theme, setTheme] = React.useState<"light" | "dark">("light");
+  const [fontScale, setFontScale] = React.useState<FontScalePreset>("M");
+  const [viewerLang, setViewerLang] = React.useState<SupportedLanguage>(() =>
+    readInitialViewerLang(targetLang)
+  );
+  // Tracked separately so we can re-translate every existing card when the
+  // host's source language is delivered via the `joined` event.
+  const [effectiveSourceLang, setEffectiveSourceLang] =
+    React.useState<string>(sourceLang);
+
+  const scrollerRef = React.useRef<HTMLDivElement | null>(null);
+  const wrapperRef = React.useRef<HTMLDivElement | null>(null);
+  // Buffers pending translation jobs across renders so we don't fire the
+  // same translate() twice for the same (id, sourceText) pair.
+  const translatedSeenRef = React.useRef<Map<string, string>>(new Map());
+
+  // -------- hydration: theme / font-scale --------
+  React.useEffect(() => {
+    setTheme(readInitialTheme());
+    setFontScale(readInitialFontScale());
+  }, []);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      /* ignore */
+    }
+  }, [theme]);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(FONT_SCALE_STORAGE_KEY, fontScale);
+    } catch {
+      /* ignore */
+    }
+  }, [fontScale]);
+
+  // -------- SSE feed --------
   React.useEffect(() => {
     const es = new EventSource(`/api/live-share/${encodeURIComponent(token)}`);
 
+    const bump = () => setLastEventAt(Date.now());
+
     es.onopen = () => {
       setConnected(true);
-      setError(null);
     };
     es.onerror = () => {
       setConnected(false);
-      // EventSource auto-reconnects; we just surface a soft hint.
-      setError("连接中断，尝试重连…");
+      // EventSource auto-reconnects; we just surface "disconnected" state.
     };
 
     es.addEventListener("joined", (ev) => {
+      bump();
       try {
         const data = JSON.parse((ev as MessageEvent).data) as {
           session: SessionDTO;
           segments: SegmentDTO[];
         };
-        dispatch({ type: "init", session: data.session, segments: data.segments });
+        dispatch({
+          type: "init",
+          session: data.session,
+          segments: data.segments,
+        });
+        // Adopt the host's source language so re-translation knows the FROM
+        // direction even if the page prop disagrees.
+        if (data.session.sourceLang) {
+          setEffectiveSourceLang(data.session.sourceLang);
+        }
       } catch {
         /* ignore parse */
       }
     });
 
     es.addEventListener("utterance", (ev) => {
+      bump();
       try {
         const data = JSON.parse((ev as MessageEvent).data) as {
           utterance?: Utterance;
         };
-        if (data.utterance) dispatch({ type: "utterance", value: data.utterance });
+        if (data.utterance) {
+          dispatch({ type: "utterance", value: data.utterance });
+        }
       } catch {
         /* ignore */
       }
     });
 
     es.addEventListener("segment", (ev) => {
+      bump();
       try {
         const data = JSON.parse((ev as MessageEvent).data) as {
           segment?: SegmentDTO;
@@ -313,12 +511,94 @@ export function LiveShareViewer({
     };
   }, [token]);
 
-  // Auto-scroll on new content.
+  // 1Hz tick so the staleness label updates without an SSE event.
   React.useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [state.order, state.byId]);
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // -------- viewer-side re-translation --------
+  // When the viewer changes language: wipe per-card viewer translations so
+  // the host's translation is shown momentarily, then we re-translate every
+  // card under the new pair.
+  React.useEffect(() => {
+    dispatch({ type: "clearViewerTranslations" });
+    translatedSeenRef.current = new Map();
+  }, [viewerLang]);
+
+  // Pick which card's source text to re-translate: anything whose viewer
+  // translation we haven't computed yet under the current pair.
+  React.useEffect(() => {
+    if (viewerLang === effectiveSourceLang) {
+      // Same language — host source IS the translation. Nothing to do.
+      return;
+    }
+    if (!hasViewerTranslatorAPI()) {
+      return;
+    }
+    let cancelled = false;
+
+    const runOnce = async () => {
+      const translator = await getOrCreateViewerTranslator(
+        effectiveSourceLang,
+        viewerLang
+      );
+      if (cancelled) return;
+      if (!translator) {
+        // Probe to give a more specific toast — "downloadable" vs missing API.
+        const a = await probeViewerTranslator(effectiveSourceLang, viewerLang);
+        if (cancelled) return;
+        if (a === "downloadable") {
+          toast.error(
+            `本地翻译模型未安装：${effectiveSourceLang.toUpperCase()} → ${viewerLang.toUpperCase()}，已保留主持人翻译`
+          );
+        } else if (a === "unavailable" || a == null) {
+          toast.error(
+            `本地翻译不可用，已保留主持人翻译（需要 Chrome 138+ 并启用 Translator API）`
+          );
+        } else {
+          toast.error("本地翻译初始化失败，已保留主持人翻译");
+        }
+        return;
+      }
+
+      // Translate every card whose current source text we haven't translated
+      // yet under this pair. Sequential to keep CPU/IO modest.
+      const seen = translatedSeenRef.current;
+      for (const id of state.order) {
+        if (cancelled) return;
+        const u = state.byId[id];
+        if (!u) continue;
+        const src = u.sourceText;
+        if (!src) continue;
+        // Key by (id + sourceText) so growing live cards re-translate as text
+        // accumulates, but a static finalized card translates exactly once.
+        const key = `${id}|${src}`;
+        if (seen.get(id) === key) continue;
+        try {
+          const translated = await translator.translate(src);
+          if (cancelled) return;
+          seen.set(id, key);
+          dispatch({
+            type: "viewerTranslation",
+            id,
+            sourceText: src,
+            text: translated,
+          });
+        } catch {
+          // Single-card failure — skip and try the next. The cache will
+          // re-attempt automatically on the next render tick.
+        }
+      }
+    };
+
+    void runOnce();
+    return () => {
+      cancelled = true;
+    };
+    // Re-run whenever the source map changes — new cards arrive, live card
+    // text grows, etc. The `seen` map debounces inside the loop.
+  }, [viewerLang, effectiveSourceLang, state.order, state.byId]);
 
   // Sort cards by audio timeline (startMs) — insertion order isn't reliable
   // because in-flight utterances can be added BEFORE earlier utterances finalize
@@ -334,6 +614,13 @@ export function LiveShareViewer({
     });
   }, [state.order, state.byId]);
 
+  // Auto-scroll on new content.
+  React.useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [sortedOrder, state.byId]);
+
   // Pick the in-flight (non-final) utterance for highlight — always the last
   // non-final one in time order.
   let liveId: string | null = null;
@@ -345,114 +632,214 @@ export function LiveShareViewer({
     }
   }
 
+  // -------- status indicator --------
+  const ageMs =
+    lastEventAt == null ? null : Math.max(0, now - lastEventAt);
+  let statusTone: "live" | "paused" | "disconnected";
+  let statusLabel: string;
+  if (!connected) {
+    statusTone = "disconnected";
+    statusLabel = "断开连接 · 重连中…";
+  } else if (ageMs == null || ageMs < STALE_THRESHOLD_MS) {
+    statusTone = "live";
+    statusLabel = "Live · 主持人正在录制";
+  } else {
+    statusTone = "paused";
+    statusLabel = "已暂停";
+  }
+
+  // -------- export actions --------
+  const buildExportRows = React.useCallback(() => {
+    return sortedOrder
+      .map((id) => state.byId[id])
+      .filter((u): u is DisplayUtterance => !!u)
+      .map((u) => ({
+        source: u.sourceText,
+        target: u.viewerTranslatedText ?? u.translatedText,
+      }))
+      .filter((row) => row.source || row.target);
+  }, [sortedOrder, state.byId]);
+
+  const handleCopyAll = React.useCallback(() => {
+    const rows = buildExportRows();
+    const text = rows.map((r) => `${r.source}\t${r.target}`).join("\n");
+    if (!text) {
+      toast.error("还没有可复制的内容");
+      return;
+    }
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === "function"
+    ) {
+      navigator.clipboard
+        .writeText(text)
+        .then(() => toast.success("已复制全部转录"))
+        .catch(() => toast.error("复制失败，请检查浏览器权限"));
+    } else {
+      toast.error("当前浏览器不支持剪贴板写入");
+    }
+  }, [buildExportRows]);
+
+  const handleDownloadMd = React.useCallback(() => {
+    const rows = buildExportRows();
+    if (rows.length === 0) {
+      toast.error("还没有可下载的内容");
+      return;
+    }
+    const title = state.title || "实时分享";
+    const body = rows.map((r) => `${r.source}\n${r.target}`).join("\n\n");
+    const md = `# ${title}\n\n## Transcript\n\n${body}\n`;
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${token}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Give the browser a tick to actually start the download before revoking.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [buildExportRows, state.title, token]);
+
+  // -------- font scaling --------
+  const scale = FONT_SCALE_VALUES[fontScale];
+  const sourceFontPx = 14 * scale;
+  const liveTargetFontPx = 20 * scale;
+  const finalTargetFontPx = 18 * scale;
+
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
-      <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-50 sm:text-lg">
-              {state.title}
-            </h1>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              {sourceLang.toUpperCase()} → {targetLang.toUpperCase()} · 只读
-            </p>
-          </div>
-          {connected ? (
-            <Badge variant="destructive" className="shrink-0 gap-1.5">
-              <Radio className="h-3.5 w-3.5 animate-pulse" />
-              Live
-            </Badge>
-          ) : (
-            <Badge variant="outline" className="shrink-0 gap-1.5 text-zinc-500">
-              <WifiOff className="h-3.5 w-3.5" />
-              离线
-            </Badge>
-          )}
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
-        {error && !connected ? (
-          <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-            {error}
-          </p>
-        ) : null}
-
-        <div
-          ref={scrollerRef}
-          className="flex max-h-[80vh] flex-col gap-3 overflow-y-auto"
-        >
-          {sortedOrder.length === 0 ? (
-            <div className="flex min-h-[50vh] items-center justify-center rounded-lg border border-zinc-200 bg-white p-12 text-sm text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900">
-              正在等待第一句话…
+    <div
+      ref={wrapperRef}
+      className={cn(theme === "dark" ? "dark" : undefined)}
+    >
+      <Toaster
+        position="top-center"
+        theme={theme}
+        richColors
+        closeButton
+      />
+      <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
+        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
+          <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3 sm:px-6">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-50 sm:text-lg">
+                  {state.title}
+                </h1>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {effectiveSourceLang.toUpperCase()} →{" "}
+                  {LANGUAGE_NAMES[viewerLang] ?? viewerLang.toUpperCase()} · 只读
+                </p>
+              </div>
             </div>
-          ) : (
-            sortedOrder.map((id) => {
-              const u = state.byId[id];
-              if (!u) return null;
-              const isLive = u.id === liveId;
-              return (
-                <div
-                  key={u.id}
-                  className={cn(
-                    "rounded-lg border p-4 transition-colors",
-                    isLive
-                      ? "border-rose-300 bg-rose-50/60 shadow-sm ring-1 ring-rose-200 dark:border-rose-800 dark:bg-rose-950/30 dark:ring-rose-900"
-                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
-                  )}
-                >
-                  <div className="mb-2 flex items-center justify-between gap-2 text-xs text-zinc-500">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={cn("h-2 w-2 rounded-full", speakerColor(u.speakerId))}
-                        aria-hidden
-                      />
-                      <span>{speakerLabel(u.speakerId)}</span>
-                      <span className="text-zinc-300">·</span>
-                      <span className="font-mono tabular-nums">
-                        {formatElapsed(u.startMs)}
-                      </span>
-                    </div>
-                    {isLive && (
-                      <Badge variant="destructive" className="gap-1 px-2 py-0">
-                        <Radio className="h-3 w-3 animate-pulse" />
-                        LIVE
-                      </Badge>
+            <ViewerToolbar
+              statusLabel={statusLabel}
+              statusTone={statusTone}
+              viewerLang={viewerLang}
+              onViewerLangChange={setViewerLang}
+              fontScale={fontScale}
+              onFontScaleChange={setFontScale}
+              theme={theme}
+              onThemeToggle={() =>
+                setTheme((t) => (t === "dark" ? "light" : "dark"))
+              }
+              onCopyAll={handleCopyAll}
+              onDownloadMd={handleDownloadMd}
+            />
+          </div>
+        </header>
+
+        <main className="mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
+          <div
+            ref={scrollerRef}
+            className="flex max-h-[80vh] flex-col gap-3 overflow-y-auto"
+          >
+            {sortedOrder.length === 0 ? (
+              <div className="flex min-h-[50vh] items-center justify-center rounded-lg border border-zinc-200 bg-white p-12 text-sm text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900">
+                正在等待第一句话…
+              </div>
+            ) : (
+              sortedOrder.map((id) => {
+                const u = state.byId[id];
+                if (!u) return null;
+                const isLive = u.id === liveId;
+                const targetText =
+                  u.viewerTranslatedText ?? u.translatedText;
+                const targetFontPx = isLive
+                  ? liveTargetFontPx
+                  : finalTargetFontPx;
+                return (
+                  <div
+                    key={u.id}
+                    className={cn(
+                      "rounded-lg border p-4 transition-colors",
+                      isLive
+                        ? "border-rose-300 bg-rose-50/60 shadow-sm ring-1 ring-rose-200 dark:border-rose-800 dark:bg-rose-950/30 dark:ring-rose-900"
+                        : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
                     )}
-                  </div>
-                  {u.translatedText ? (
-                    <>
-                      {u.sourceText ? (
-                        <p className="text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
-                          {u.sourceText}
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2 text-xs text-zinc-500">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "h-2 w-2 rounded-full",
+                            speakerColor(u.speakerId)
+                          )}
+                          aria-hidden
+                        />
+                        <span>{speakerLabel(u.speakerId)}</span>
+                        <span className="text-zinc-300">·</span>
+                        <span className="font-mono tabular-nums">
+                          {formatElapsed(u.startMs)}
+                        </span>
+                      </div>
+                      {isLive && (
+                        <span className="inline-flex items-center gap-1 rounded bg-rose-600 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
+                          <Radio className="h-3 w-3 animate-pulse" />
+                          LIVE
+                        </span>
+                      )}
+                    </div>
+                    {targetText ? (
+                      <>
+                        {u.sourceText ? (
+                          <p
+                            className="leading-relaxed text-zinc-500 dark:text-zinc-400"
+                            style={{ fontSize: `${sourceFontPx}px` }}
+                          >
+                            {u.sourceText}
+                          </p>
+                        ) : null}
+                        <p
+                          className={cn(
+                            "mt-1 leading-relaxed text-zinc-900 dark:text-zinc-50",
+                            isLive ? "font-semibold" : "font-medium"
+                          )}
+                          style={{ fontSize: `${targetFontPx}px` }}
+                        >
+                          {targetText}
                         </p>
-                      ) : null}
+                      </>
+                    ) : u.sourceText ? (
+                      // No translation yet — promote source so the card isn't empty.
                       <p
                         className={cn(
-                          "mt-1 leading-relaxed text-zinc-900 dark:text-zinc-50",
-                          isLive ? "text-xl font-semibold" : "text-lg font-medium"
+                          "leading-relaxed text-zinc-900 dark:text-zinc-50",
+                          isLive ? "font-semibold" : "font-medium"
                         )}
+                        style={{ fontSize: `${targetFontPx}px` }}
                       >
-                        {u.translatedText}
+                        {u.sourceText}
                       </p>
-                    </>
-                  ) : u.sourceText ? (
-                    // No translation yet — promote source so the card isn't empty.
-                    <p
-                      className={cn(
-                        "leading-relaxed text-zinc-900 dark:text-zinc-50",
-                        isLive ? "text-xl font-semibold" : "text-lg font-medium"
-                      )}
-                    >
-                      {u.sourceText}
-                    </p>
-                  ) : null}
-                </div>
-              );
-            })
-          )}
-        </div>
-      </main>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }
