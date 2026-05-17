@@ -452,14 +452,15 @@ export class Recorder {
     // Soniox's two-way translation only runs in "cloud" mode. The "local"
     // option means the user explicitly wants on-device Chrome Translator
     // (privacy-first); asking Soniox to also translate would defeat the
-    // Always use Soniox's built-in two-way translation when a target language
-    // is configured and differs from the source. It pairs each spoken sentence
-    // with its translation in the same WS stream — much better than waiting
-    // for <end> and re-translating via a separate call. The translationMode
-    // flag only affects the UI label / cloud-fallback path; the WS config
-    // doesn't change.
+    // Translation routing per UI mode:
+    //   "off"   — no translation at all
+    //   "local" — Chrome's on-device Translator API handles each finalized
+    //             segment client-side. No Soniox translation budget burned.
+    //   "cloud" — Soniox's built-in two-way translation runs in the same WS
+    //             stream so source ↔ translation stay token-aligned. Costs
+    //             Soniox translation usage.
     const wantTranslation =
-      this.config.translationMode !== "off" &&
+      this.config.translationMode === "cloud" &&
       this.config.sourceLanguage !== this.config.targetLanguage;
 
     const initConfig: Record<string, unknown> = {
