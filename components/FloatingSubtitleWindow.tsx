@@ -7,6 +7,8 @@ export interface FloatingSubtitleWindowProps {
   latestTranslatedText: string;
   showTranslation: boolean;
   recording: boolean;
+  /** Multiplier for the body text size (1.0 = default). Range ~0.75–1.5. */
+  fontScale?: number;
 }
 
 /**
@@ -18,6 +20,7 @@ export function FloatingSubtitleWindow({
   latestTranslatedText,
   showTranslation,
   recording,
+  fontScale = 1,
 }: FloatingSubtitleWindowProps) {
   return (
     <div
@@ -43,7 +46,7 @@ export function FloatingSubtitleWindow({
           alignItems: "center",
           gap: 8,
           marginBottom: 4,
-          fontSize: 11,
+          fontSize: 11 * fontScale,
           letterSpacing: 0.4,
           textTransform: "uppercase",
           color: recording ? "#f87171" : "#a1a1aa",
@@ -64,7 +67,7 @@ export function FloatingSubtitleWindow({
 
       <div
         style={{
-          fontSize: 22,
+          fontSize: 22 * fontScale,
           lineHeight: 1.35,
           fontWeight: 600,
           color: "#ffffff",
@@ -82,7 +85,7 @@ export function FloatingSubtitleWindow({
       {showTranslation ? (
         <div
           style={{
-            fontSize: 15,
+            fontSize: 15 * fontScale,
             lineHeight: 1.4,
             color: "#d4d4d8",
             whiteSpace: "pre-wrap",

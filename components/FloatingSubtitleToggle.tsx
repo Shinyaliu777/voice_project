@@ -64,6 +64,40 @@ export function FloatingSubtitleToggle({
   const [container, setContainer] = React.useState<HTMLDivElement | null>(null);
   const pipWindowRef = React.useRef<DocumentPiPWindow | null>(null);
   const [opening, setOpening] = React.useState(false);
+  // PiP appearance — fetched lazily from /api/user/settings.
+  const [windowWidth, setWindowWidth] = React.useState(480);
+  const [windowHeight, setWindowHeight] = React.useState(200);
+  const [fontScale, setFontScale] = React.useState(1);
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const resp = await fetch("/api/user/settings");
+        if (!resp.ok) return;
+        const data = (await resp.json()) as {
+          settings?: Record<string, unknown>;
+        };
+        if (!alive) return;
+        const s = data.settings ?? {};
+        const w = Number(s.floatingWindowWidth);
+        const h = Number(s.floatingWindowHeight);
+        const f = Number(s.floatingFontSize);
+        if (Number.isFinite(w) && w > 240 && w < 1200) setWindowWidth(w);
+        if (Number.isFinite(h) && h > 120 && h < 800) setWindowHeight(h);
+        if (Number.isFinite(f) && f > 8 && f < 48) {
+          // floatingFontSize is the user-facing source-text px target; the
+          // baseline source size inside the window is 22, so derive the scale.
+          setFontScale(f / 22);
+        }
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const closePip = React.useCallback(() => {
     try {
@@ -98,7 +132,7 @@ export function FloatingSubtitleToggle({
     }
     setOpening(true);
     try {
-      const w = await ctrl.requestWindow({ width: 480, height: 200 });
+      const w = await ctrl.requestWindow({ width: windowWidth, height: windowHeight });
       pipWindowRef.current = w;
 
       const root = w.document.createElement("div");
@@ -164,6 +198,7 @@ export function FloatingSubtitleToggle({
               latestTranslatedText={latestTranslatedText}
               showTranslation={showTranslation}
               recording={recording}
+              fontScale={fontScale}
             />,
             container
           )
