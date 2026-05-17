@@ -321,7 +321,10 @@ export class Recorder {
       enable_speaker_diarization:
         this.config.enableSpeakerDiarization ?? true,
       enable_endpoint_detection: true,
-      language_hints: [this.config.sourceLanguage],
+      language_hints: [this.config.sourceLanguage, this.config.targetLanguage],
+      // Restrict Soniox to only the languages we're translating between.
+      // Avoids mis-recognizing a 3rd language and producing garbage tokens.
+      language_hints_strict: true,
     };
     if (this.config.transcriptionContext) {
       initConfig.context = this.config.transcriptionContext;
