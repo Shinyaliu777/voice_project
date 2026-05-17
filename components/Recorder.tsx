@@ -42,6 +42,7 @@ import { BookmarkInRecording } from "@/components/BookmarkInRecording";
 import { FloatingSubtitleToggle } from "@/components/FloatingSubtitleToggle";
 import { LiveShareDialog } from "@/components/LiveShareDialog";
 import { MinutesView } from "@/components/MinutesView";
+import { RecorderSidebar } from "@/components/RecorderSidebar";
 import { isChromeTranslatorAvailable } from "@/lib/translation/chrome-local";
 import { Recorder as AudioRecorder } from "@/lib/audio/recorder";
 import type {
@@ -701,7 +702,8 @@ export function Recorder({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-7xl gap-4 px-4 py-4">
+    <div className="flex w-full min-w-0 flex-1 flex-col gap-4 lg:max-w-3xl">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
@@ -818,42 +820,8 @@ export function Recorder({
         recording={recording}
       />
 
-      {/* Live minutes panel */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-          <CardTitle className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-            实时纪要
-            {minutesStatus === "streaming" && (
-              <span className="ml-2 text-xs text-zinc-500">生成中…</span>
-            )}
-            {minutesStatus === "error" && (
-              <span className="ml-2 text-xs text-rose-500">出错，点刷新重试</span>
-            )}
-          </CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => refreshLiveMinutes()}
-            disabled={!sessionId || minutesStatus === "streaming"}
-          >
-            {minutesStatus === "streaming" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            <span>立即刷新</span>
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {minutesSections.length === 0 ? (
-            <p className="py-2 text-sm text-zinc-500">
-              录够几句话后会自动生成要点 · 也可点「立即刷新」手动触发
-            </p>
-          ) : (
-            <MinutesView sections={minutesSections} pendingLastSection={pendingSection !== null} />
-          )}
-        </CardContent>
-      </Card>
+      {/* Live minutes used to live in a card here. It's now in the right
+          sidebar (`<RecorderSidebar />`) below, along with chat + files. */}
 
       <Dialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
         <DialogContent className="sm:max-w-md">
@@ -883,6 +851,16 @@ export function Recorder({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+    {/* Right sidebar (lecsync-style 纪要 / 对话 / 文件). Hidden on <lg. */}
+    <RecorderSidebar
+      sessionId={sessionId}
+      folderId={null}
+      minutesSections={minutesSections}
+      pendingSection={pendingSection}
+      minutesStatus={minutesStatus}
+      onRefreshMinutes={() => refreshLiveMinutes()}
+    />
     </div>
   );
 }
