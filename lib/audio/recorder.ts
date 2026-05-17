@@ -101,6 +101,13 @@ export class Recorder {
   private readonly DEVICE_RECOVERY_MAX_ATTEMPTS = 3;
   private readonly DEVICE_RECOVERY_BACKOFF_MS = 2000;
 
+  // ---- WS reconnect ----
+  /** Set true on stop()/destroy() so close handlers don't try to reconnect. */
+  private intentionalShutdown = false;
+  private wsReconnectAttempts = 0;
+  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly WS_RECONNECT_BACKOFFS_MS = [500, 1500, 3000];
+
   constructor(config: RecorderConfig, onEvent: (e: RecorderEvent) => void) {
     this.config = config;
     this.onEvent = onEvent;
@@ -161,6 +168,11 @@ export class Recorder {
 
   async stop(): Promise<void> {
     if (this.state === "idle" || this.state === "ended") return;
+    this.intentionalShutdown = true;
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
     this.setState("stopping");
 
     // 1. Stop MediaRecorder, wait for any final dataavailable to land.
@@ -213,6 +225,11 @@ export class Recorder {
 
   destroy(): void {
     // Synchronous best-effort teardown without further events.
+    this.intentionalShutdown = true;
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
     this.detachDeviceMonitor();
     try {
       this.mediaRecorder?.stop();
@@ -475,6 +492,18 @@ export class Recorder {
     ws.addEventListener("message", (event) => this.handleSonioxMessage(event));
     ws.addEventListener("close", () => {
       this.wsOpen = false;
+      // Auto-reconnect if the close wasn't initiated by us and we're still
+      // mid-session. Don't fire during normal stop()/destroy() or while
+      // device-recovery is the failure path.
+      if (
+        !this.intentionalShutdown &&
+        this.state !== "stopping" &&
+        this.state !== "ended" &&
+        this.state !== "idle" &&
+        this.state !== "error"
+      ) {
+        this.scheduleWsReconnect();
+      }
     });
     ws.addEventListener("error", () => {
       // Surface but don't tear down — recording can still continue to chunks.
@@ -484,6 +513,69 @@ export class Recorder {
         true
       );
     });
+  }
+
+  /**
+   * On unexpected WS close: finalize anything in flight (Soniox sessions
+   * are stateful and don't resume), then back off and re-mint a token +
+   * re-open. After WS_RECONNECT_BACKOFFS_MS.length failures we surface a
+   * terminal error.
+   */
+  private scheduleWsReconnect(): void {
+    if (this.wsReconnectTimer) return;
+    if (this.wsReconnectAttempts >= this.WS_RECONNECT_BACKOFFS_MS.length) {
+      this.emitError(
+        new Error("无法重新连接转录服务，请结束录制后重试"),
+        "ws_reconnect_failed",
+        false
+      );
+      this.setState("error");
+      return;
+    }
+    // Promote whatever was in-flight — Soniox loses state across sessions.
+    for (const u of this.currentUtterances.values()) {
+      this.emitUtterance(u, true);
+      this.finalizeQueue.push(u);
+    }
+    this.currentUtterances.clear();
+    this.scheduleFinalizeFlush();
+
+    this.setState("reconnecting");
+    const delay = this.WS_RECONNECT_BACKOFFS_MS[this.wsReconnectAttempts];
+    this.wsReconnectAttempts += 1;
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      void this.attemptWsReconnect();
+    }, delay);
+  }
+
+  private async attemptWsReconnect(): Promise<void> {
+    if (this.intentionalShutdown) return;
+    if (this.state === "stopping" || this.state === "ended" || this.state === "idle") {
+      return;
+    }
+    try {
+      // Old keys may have expired during the outage — get a fresh one.
+      const resp = await fetch("/api/soniox-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok) throw new Error(`token mint ${resp.status}`);
+      const data = (await resp.json()) as { token?: string };
+      if (!data.token) throw new Error("token mint: empty body");
+      this.config = { ...this.config, sonioxToken: data.token };
+
+      // openSonioxWs will re-attach its own close listener that will call
+      // scheduleWsReconnect again if the new socket also dies.
+      await this.openSonioxWs();
+
+      this.wsReconnectAttempts = 0;
+      this.setState("recording");
+      this.emitError(new Error("连接已恢复，转录继续"), "ws_recovered", true);
+    } catch {
+      this.scheduleWsReconnect();
+    }
   }
 
   private handleSonioxMessage(event: MessageEvent): void {
