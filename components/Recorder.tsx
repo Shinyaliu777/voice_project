@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   ArrowDownUp,
   ArrowLeftRight,
-  ArrowRight,
   Loader2,
   Mic,
   Pause,
@@ -33,9 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { AudioSourcePicker } from "@/components/AudioSourcePicker";
@@ -466,7 +463,7 @@ export function Recorder({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
@@ -581,6 +578,7 @@ export function Recorder({
         byId={state.byId}
         showTranslation={showTranslation}
         displayMode={displayMode}
+        recording={recording}
       />
 
       {/* Live minutes panel */}
@@ -756,6 +754,7 @@ interface UtteranceListProps {
   byId: Record<string, Utterance>;
   showTranslation: boolean;
   displayMode: DisplayMode;
+  recording: boolean;
 }
 
 function UtteranceList({
@@ -763,26 +762,13 @@ function UtteranceList({
   byId,
   showTranslation,
   displayMode,
+  recording,
 }: UtteranceListProps) {
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
-  // Auto-scroll to bottom on new utterance.
-  React.useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [order.length, byId]);
+  const bottomRef = React.useRef<HTMLDivElement | null>(null);
 
-  if (order.length === 0) {
-    return (
-      <Card className="min-h-[50vh]">
-        <CardContent className="flex h-full items-center justify-center py-12">
-          <p className="text-sm text-zinc-400">正在监听…</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  // Pick the live (last non-final) utterance.
+  // The last in-flight (non-final) utterance powers the bottom live card.
+  // Everything else flows into the history stream above it.
   let liveId: string | null = null;
   for (let i = order.length - 1; i >= 0; i--) {
     const u = byId[order[i]];
@@ -791,122 +777,249 @@ function UtteranceList({
       break;
     }
   }
+  const finalIds = liveId ? order.filter((id) => id !== liveId) : order;
+  const liveUtterance = liveId ? byId[liveId] ?? null : null;
+
+  // Whether the segment headers need to show speaker names. Lecsync only does
+  // this when there's actually more than one speaker in the conversation.
+  const multiSpeaker = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (const id of finalIds) {
+      const u = byId[id];
+      if (u?.speakerId != null) ids.add(u.speakerId);
+    }
+    if (liveUtterance?.speakerId != null) ids.add(liveUtterance.speakerId);
+    return ids.size > 1;
+  }, [finalIds, byId, liveUtterance]);
+
+  // Pin to bottom when content grows, matching lecsync's live cadence.
+  React.useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [order.length, liveId, byId]);
+
+  const hasHistory = finalIds.length > 0;
+  const showLiveCard = liveUtterance !== null || recording;
 
   return (
-    <div
-      ref={scrollerRef}
-      className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto"
-    >
-      {order.map((id) => {
-        const u = byId[id];
-        if (!u) return null;
-        const isLive = u.id === liveId;
-        return (
-          <UtteranceCard
-            key={u.id}
-            utterance={u}
-            isLive={isLive}
+    <div className="relative flex flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800/80 dark:bg-zinc-950">
+      <div className="relative min-h-[280px] flex-1">
+        <div
+          ref={scrollerRef}
+          className="h-full max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_64px)]"
+        >
+          <div className="space-y-5 p-6 pt-10">
+            {hasHistory ? (
+              <>
+                {finalIds.map((id) => {
+                  const u = byId[id];
+                  if (!u) return null;
+                  return (
+                    <Segment
+                      key={u.id}
+                      utterance={u}
+                      showTranslation={showTranslation}
+                      displayMode={displayMode}
+                      showSpeaker={multiSpeaker}
+                    />
+                  );
+                })}
+                <div ref={bottomRef} aria-hidden />
+              </>
+            ) : !showLiveCard ? (
+              <p className="py-12 text-center text-base text-zinc-400 dark:text-zinc-500">
+                正在监听…
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {showLiveCard ? (
+        <div className="border-t border-zinc-100 px-4 pb-3 pt-3 dark:border-zinc-900">
+          <LiveCard
+            utterance={liveUtterance}
+            recording={recording}
             showTranslation={showTranslation}
             displayMode={displayMode}
           />
-        );
-      })}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-// Soft-wrap at sentence boundaries so multi-sentence utterances render with a
-// line break between each sentence, matching lecsync's per-sentence cadence
-// even before Soniox fires <end>. Keeps the terminator on the previous line.
-function breakAtSentences(text: string): string {
-  if (!text) return text;
-  return text.replace(/([.!?。！？])(\s*)(?=\S)/g, "$1\n");
-}
-
-function UtteranceCard({
+function Segment({
   utterance,
-  isLive,
   showTranslation,
   displayMode,
+  showSpeaker,
 }: {
   utterance: Utterance;
-  isLive: boolean;
   showTranslation: boolean;
   displayMode: DisplayMode;
+  showSpeaker: boolean;
 }) {
-  const stamp = formatElapsed(utterance.startMs);
   const hasTranslation = showTranslation && !!utterance.translatedText;
-  const sourceDisplay = React.useMemo(
-    () => breakAtSentences(utterance.sourceText),
-    [utterance.sourceText]
-  );
-  const translatedDisplay = React.useMemo(
-    () => (utterance.translatedText ? breakAtSentences(utterance.translatedText) : ""),
-    [utterance.translatedText]
-  );
+  const stamp = formatElapsed(utterance.startMs);
 
-  // Per-mode style for source vs translation lines.
   const sourceClass =
     displayMode === "source-emphasis"
-      ? "text-[17px] leading-snug text-zinc-900 dark:text-zinc-50"
+      ? "text-base md:text-lg font-medium text-zinc-900 dark:text-zinc-50"
       : displayMode === "balanced"
-      ? "text-base leading-snug text-zinc-700 dark:text-zinc-200"
-      : "text-sm leading-snug text-zinc-500 dark:text-zinc-400";
+      ? "text-sm md:text-base text-zinc-700 dark:text-zinc-200"
+      : "text-sm text-zinc-500 dark:text-zinc-400";
   const translationClass =
     displayMode === "translation-emphasis"
-      ? "text-[17px] leading-snug text-zinc-900 dark:text-zinc-50"
+      ? "text-base md:text-lg font-medium text-zinc-900 dark:text-zinc-50"
       : displayMode === "balanced"
-      ? "text-base leading-snug text-zinc-700 dark:text-zinc-200"
-      : "text-sm leading-snug text-zinc-500 dark:text-zinc-400";
+      ? "text-sm md:text-base text-zinc-700 dark:text-zinc-200"
+      : "text-sm text-zinc-500 dark:text-zinc-400";
 
   return (
-    <div
-      className={cn(
-        "rounded-[10px] border p-4 transition-colors",
-        isLive
-          ? "border-rose-300 bg-rose-50/60 shadow-sm ring-1 ring-rose-200 dark:border-rose-800 dark:bg-rose-950/30 dark:ring-rose-900"
-          : "border-zinc-100 bg-white dark:border-zinc-900 dark:bg-zinc-950"
-      )}
-    >
-      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
-        <div className="flex items-center gap-1.5">
+    <div className="group/segment relative space-y-1.5">
+      {showSpeaker && utterance.speakerId != null ? (
+        <div className="mb-1 flex items-center gap-1.5 text-[11px] text-zinc-500">
           <span
             className={cn("h-1.5 w-1.5 rounded-full", speakerColor(utterance.speakerId))}
             aria-hidden
           />
-          <span>{speakerLabel(utterance.speakerId)}</span>
+          <span className="font-medium">{speakerLabel(utterance.speakerId)}</span>
           <span className="text-zinc-300 dark:text-zinc-700">·</span>
           <span className="font-mono tabular-nums">{stamp}</span>
         </div>
-        {isLive && (
-          <Badge variant="destructive" className="gap-1 px-2 py-0">
-            <Radio className="h-3 w-3 animate-pulse" />
-            LIVE
-          </Badge>
-        )}
-      </div>
+      ) : (
+        <div className="mb-0.5 font-mono text-[10px] tabular-nums text-zinc-400 dark:text-zinc-600">
+          {stamp}
+        </div>
+      )}
       {utterance.sourceText ? (
-        <p
-          className={cn(
-            "min-w-0 whitespace-pre-line break-words [overflow-wrap:anywhere]",
-            sourceClass,
-            isLive && displayMode === "source-emphasis" && "font-medium"
-          )}
-        >
-          {sourceDisplay}
-        </p>
+        <p className={cn("leading-relaxed", sourceClass)}>{utterance.sourceText}</p>
       ) : null}
       {hasTranslation ? (
-        <p
-          className={cn(
-            "mt-1 min-w-0 whitespace-pre-line break-words [overflow-wrap:anywhere]",
-            translationClass,
-            isLive && displayMode === "translation-emphasis" && "font-medium"
-          )}
-        >
-          {translatedDisplay}
+        <p className={cn("leading-relaxed", translationClass)}>
+          {utterance.translatedText}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function LiveCard({
+  utterance,
+  recording,
+  showTranslation,
+  displayMode,
+}: {
+  utterance: Utterance | null;
+  recording: boolean;
+  showTranslation: boolean;
+  displayMode: DisplayMode;
+}) {
+  const sourceRef = React.useRef<HTMLDivElement | null>(null);
+  const transRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Pin each pane to its bottom as new text streams in.
+  React.useEffect(() => {
+    if (sourceRef.current) sourceRef.current.scrollTop = sourceRef.current.scrollHeight;
+  }, [utterance?.sourceText]);
+  React.useEffect(() => {
+    if (transRef.current) transRef.current.scrollTop = transRef.current.scrollHeight;
+  }, [utterance?.translatedText]);
+
+  const sourceText = utterance?.sourceText ?? "";
+  const translatedText = utterance?.translatedText ?? "";
+  const hasTranslation = showTranslation && !!translatedText;
+  const isListening = !sourceText && recording;
+
+  const sourceClass =
+    displayMode === "source-emphasis"
+      ? "text-lg md:text-xl font-semibold text-zinc-900 dark:text-zinc-50"
+      : displayMode === "balanced"
+      ? "text-base md:text-lg text-zinc-800 dark:text-zinc-100"
+      : "text-sm md:text-base text-zinc-500 dark:text-zinc-400";
+  const translationClass =
+    displayMode === "translation-emphasis"
+      ? "text-2xl md:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50"
+      : displayMode === "balanced"
+      ? "text-lg md:text-xl font-semibold text-zinc-800 dark:text-zinc-100"
+      : "text-base text-zinc-600 dark:text-zinc-300";
+
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-xl border backdrop-blur-md",
+        recording
+          ? "border-rose-200/80 bg-gradient-to-br from-rose-50/80 via-white/85 to-rose-50/40 shadow-sm ring-1 ring-rose-200/40 dark:border-rose-900/40 dark:from-rose-950/30 dark:via-zinc-900/60 dark:to-rose-950/20 dark:ring-rose-900/30"
+          : "border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+      )}
+    >
+      <div className="relative z-10 space-y-2 p-4 md:p-5">
+        {isListening ? (
+          <p className="flex items-center gap-2 py-2 text-sm text-zinc-500 dark:text-zinc-400">
+            <Radio className="h-3.5 w-3.5 animate-pulse text-rose-500" />
+            <span>正在监听…</span>
+          </p>
+        ) : (
+          <>
+            {sourceText ? (
+              <div
+                ref={sourceRef}
+                className="max-h-28 overflow-y-auto overscroll-contain pr-1"
+              >
+                <p className={cn("leading-relaxed", sourceClass)}>
+                  {sourceText}
+                  {recording ? (
+                    <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-rose-500 align-middle dark:bg-rose-400" />
+                  ) : null}
+                </p>
+              </div>
+            ) : null}
+            {hasTranslation ? (
+              <div
+                ref={transRef}
+                className="max-h-28 overflow-y-auto overscroll-contain pr-1"
+              >
+                <p className={cn("leading-snug", translationClass)}>
+                  {translatedText}
+                  {recording ? (
+                    <span className="ml-1 animate-pulse text-zinc-400 dark:text-zinc-500">
+                      …
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+      <div
+        className={cn(
+          "relative z-10 flex items-center gap-2 border-t px-4 py-1.5",
+          recording
+            ? "border-rose-200/60 dark:border-rose-900/30"
+            : "border-zinc-200 dark:border-zinc-800"
+        )}
+      >
+        <span className="relative flex h-2 w-2">
+          {recording ? (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-500/60 opacity-75" />
+          ) : null}
+          <span
+            className={cn(
+              "relative inline-flex h-2 w-2 rounded-full",
+              recording ? "bg-rose-500" : "bg-zinc-400"
+            )}
+          />
+        </span>
+        <span
+          className={cn(
+            "font-mono text-[11px] uppercase tracking-widest",
+            recording ? "text-rose-600/80 dark:text-rose-400/80" : "text-zinc-500"
+          )}
+        >
+          {recording ? "Live" : "Paused"}
+        </span>
+      </div>
     </div>
   );
 }

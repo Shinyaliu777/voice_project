@@ -452,9 +452,14 @@ export class Recorder {
     // Soniox's two-way translation only runs in "cloud" mode. The "local"
     // option means the user explicitly wants on-device Chrome Translator
     // (privacy-first); asking Soniox to also translate would defeat the
-    // promise and slow things down with redundant work.
+    // Always use Soniox's built-in two-way translation when a target language
+    // is configured and differs from the source. It pairs each spoken sentence
+    // with its translation in the same WS stream — much better than waiting
+    // for <end> and re-translating via a separate call. The translationMode
+    // flag only affects the UI label / cloud-fallback path; the WS config
+    // doesn't change.
     const wantTranslation =
-      this.config.translationMode === "cloud" &&
+      this.config.translationMode !== "off" &&
       this.config.sourceLanguage !== this.config.targetLanguage;
 
     const initConfig: Record<string, unknown> = {
@@ -466,10 +471,10 @@ export class Recorder {
       enable_speaker_diarization:
         this.config.enableSpeakerDiarization ?? true,
       enable_endpoint_detection: true,
-      language_hints: [this.config.sourceLanguage, this.config.targetLanguage],
-      // Restrict Soniox to only the languages we're translating between.
-      // Avoids mis-recognizing a 3rd language and producing garbage tokens.
-      language_hints_strict: true,
+      // Single language hint — the source. Soniox auto-detects the other side
+      // of a two-way translation pair. Strict hints would block borderline
+      // pronunciation and stall the stream, so leave at default (off).
+      language_hints: [this.config.sourceLanguage],
     };
     if (this.config.transcriptionContext) {
       initConfig.context = this.config.transcriptionContext;
@@ -477,7 +482,7 @@ export class Recorder {
     if (wantTranslation) {
       // Two-way: Soniox auto-detects which side is being spoken and translates
       // into the other one in the same WS stream. Keeps both directions paired
-      // by translation_status on each token.
+      // via the per-token translation_status field.
       initConfig.translation = {
         type: "two_way",
         language_a: this.config.sourceLanguage,
@@ -693,12 +698,18 @@ export class Recorder {
     }
 
     // Apply this frame's pending snapshot to each still-active utterance.
+    let didSplit = false;
     for (const speakerId of touched) {
       const u = this.currentUtterances.get(speakerId);
       if (!u) continue; // finalized this frame
       const fp = framePending.get(speakerId);
       u.sourcePending = fp?.source ?? "";
       u.transPending = fp?.trans ?? "";
+      // Before emitting the in-flight state, see if any complete sentences
+      // accumulated in finals — if so, spin them off as their own cards so
+      // the live block stays short (Soniox doesn't always emit <end> for
+      // every sentence boundary on its own).
+      if (this.splitOffCompletedSentences(u)) didSplit = true;
       this.emitUtterance(u, false);
     }
 
@@ -707,7 +718,47 @@ export class Recorder {
       this.emitUtterance(u, true);
       this.finalizeQueue.push(u);
     }
-    if (finalizedThisFrame.length > 0) this.scheduleFinalizeFlush();
+    if (finalizedThisFrame.length > 0 || didSplit) this.scheduleFinalizeFlush();
+  }
+
+  /**
+   * If a still-in-flight utterance has accumulated more than one complete
+   * sentence in its finals, peel everything except the last sentence off
+   * into its own finalized card. Pairs source ↔ translation only when both
+   * sides have the same sentence count; otherwise leaves the utterance
+   * intact so the alignment stays correct. Returns true when a split
+   * happened.
+   */
+  private splitOffCompletedSentences(u: UtteranceBuilder): boolean {
+    const srcSentences = splitSentences(u.sourceFinal);
+    if (srcSentences.length < 2) return false;
+    const transSentences = splitSentences(u.transFinal);
+    // Only split when translation has caught up — otherwise we risk
+    // emitting source-only cards while the translation lags one sentence behind.
+    if (transSentences.length > 0 && transSentences.length !== srcSentences.length) {
+      return false;
+    }
+    const tailIndex = srcSentences.length - 1;
+    const splitOff: UtteranceBuilder = {
+      id: u.id,
+      speakerId: u.speakerId,
+      startMs: u.startMs,
+      endMs: u.endMs,
+      sourceFinal: srcSentences.slice(0, tailIndex).join(" "),
+      sourcePending: "",
+      transFinal: transSentences.slice(0, tailIndex).join(" "),
+      transPending: "",
+    };
+    // The remaining "tail" sentence becomes the new in-flight utterance.
+    u.id = `u-${++this.utteranceCounter}`;
+    u.sourceFinal = srcSentences[tailIndex];
+    u.sourcePending = "";
+    u.transFinal = transSentences[tailIndex] ?? "";
+    u.transPending = "";
+    u.startMs = u.endMs;
+    this.emitUtterance(splitOff, true);
+    this.finalizeQueue.push(splitOff);
+    return true;
   }
 
   private emitUtterance(u: UtteranceBuilder, isFinal: boolean): void {
