@@ -617,6 +617,16 @@ export class Recorder {
       return;
     }
 
+    // Debug: set `window.__debugSoniox = true` in the browser console before
+    // recording to dump every Soniox frame. Helpful for diagnosing why
+    // translation tokens aren't appearing.
+    if (
+      typeof window !== "undefined" &&
+      (window as unknown as { __debugSoniox?: boolean }).__debugSoniox
+    ) {
+      console.log("[Soniox frame]", frame);
+    }
+
     if (frame.error_code) {
       this.emitError(
         new Error(frame.error_message ?? `Soniox error ${frame.error_code}`),
