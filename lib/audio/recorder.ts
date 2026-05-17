@@ -746,12 +746,19 @@ export class Recorder {
 
     // Apply this frame's pending snapshot to each still-active utterance.
     let didSplit = false;
+    const isLocalMode = this.config.translationMode === "local";
     for (const speakerId of touched) {
       const u = this.currentUtterances.get(speakerId);
       if (!u) continue; // finalized this frame
       const fp = framePending.get(speakerId);
       u.sourcePending = fp?.source ?? "";
-      u.transPending = fp?.trans ?? "";
+      // In "cloud" mode Soniox emits a fresh translation snapshot every frame
+      // and we mirror it. In "local" mode, Soniox never sends translations —
+      // `scheduleLiveTranslate` is the sole writer of `transPending`, so
+      // don't clobber the translation it just wrote.
+      if (!isLocalMode) {
+        u.transPending = fp?.trans ?? "";
+      }
       // Before emitting the in-flight state, see if any complete sentences
       // accumulated in finals — if so, spin them off as their own cards so
       // the live block stays short (Soniox doesn't always emit <end> for
