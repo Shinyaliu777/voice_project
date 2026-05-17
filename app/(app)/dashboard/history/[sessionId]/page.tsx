@@ -8,6 +8,7 @@ import { GenerateMinutesButton } from "@/components/GenerateMinutesButton";
 import { ShareDialog } from "@/components/ShareDialog";
 import { ExportMenu } from "@/components/ExportMenu";
 import { SessionActionsBar } from "@/components/SessionActionsBar";
+import { SessionFolderPicker } from "@/components/SessionFolderPicker";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
@@ -63,15 +64,22 @@ export default async function SessionDetailPage({
   const { sessionId } = await params;
   const userId = await getDevUserId();
 
-  const session = await prisma.session.findUnique({
-    where: { id: sessionId },
-    include: {
-      segments: { orderBy: { segmentIndex: "asc" } },
-      speakerNames: true,
-      bookmarks: { orderBy: { atMs: "asc" } },
-      minutes: true,
-    },
-  });
+  const [session, folders] = await Promise.all([
+    prisma.session.findUnique({
+      where: { id: sessionId },
+      include: {
+        segments: { orderBy: { segmentIndex: "asc" } },
+        speakerNames: true,
+        bookmarks: { orderBy: { atMs: "asc" } },
+        minutes: true,
+      },
+    }),
+    prisma.folder.findMany({
+      where: { userId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, color: true },
+    }),
+  ]);
 
   if (!session || session.userId !== userId) {
     notFound();
@@ -153,6 +161,11 @@ export default async function SessionDetailPage({
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1">
+          <SessionFolderPicker
+            sessionId={session.id}
+            currentFolderId={session.folderId}
+            folders={folders}
+          />
           <SessionActionsBar
             sessionId={session.id}
             audioUrl={audioUrl}
