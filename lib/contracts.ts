@@ -455,6 +455,7 @@ export type RecorderState =
   | "connected"
   | "recording"
   | "paused"
+  | "reconnecting"
   | "stopping"
   | "ended"
   | "error";
