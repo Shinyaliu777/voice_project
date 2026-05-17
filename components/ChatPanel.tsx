@@ -152,15 +152,21 @@ export function ChatPanel(props: Props) {
         // first response under the original URL — avoids a mid-stream remount.
         let sid = chatSessionId;
         if (!sid) {
+          // Only include sessionId when we actually have one — the route's
+          // zod schema is `z.string().optional()` which rejects null.
+          const body: { sessionId?: string; title: string } = {
+            title: trimmed.slice(0, 40),
+          };
+          if (boundRecordingId) body.sessionId = boundRecordingId;
           const resp = await fetch("/api/chat/sessions", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              sessionId: boundRecordingId,
-              title: trimmed.slice(0, 40),
-            }),
+            body: JSON.stringify(body),
           });
-          if (!resp.ok) throw new Error(`chat session create ${resp.status}`);
+          if (!resp.ok) {
+            const txt = await resp.text().catch(() => "");
+            throw new Error(`chat session create ${resp.status}: ${txt.slice(0, 100)}`);
+          }
           const created = (await resp.json()) as ChatSessionDTO;
           sid = created.id;
         }
