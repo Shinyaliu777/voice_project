@@ -143,6 +143,9 @@ export class Recorder {
     Promise<{ translate(text: string): Promise<string> } | null>
   > = new Map();
 
+  /** Set after the first cloud-fallback failure so we don't spam toasts. */
+  private translateFallbackWarned = false;
+
   constructor(config: RecorderConfig, onEvent: (e: RecorderEvent) => void) {
     this.config = config;
     this.onEvent = onEvent;
@@ -1294,10 +1297,25 @@ export class Recorder {
     try {
       const translatedText = await this.translateAutoDirection(seg.sourceText);
       if (translatedText == null) {
-        // Chrome Translator model isn't available for this pair (downloadable
-        // outside a user gesture, or API disabled). Fall back to the cloud
-        // route so the user still sees a translation instead of a blank card.
-        await this.translateCloud(seg);
+        // Chrome doesn't have this language pair. Try the cloud (/api/translate)
+        // once silently — but if that ALSO fails (Gemini quota exhausted, key
+        // invalid, etc.), keep quiet. Surfacing a 500 toast per segment is
+        // useless spam; user needs to either switch to "云端翻译" mode (Soniox
+        // WS two-way, no Gemini) or fix their Gemini key/quota.
+        try {
+          await this.translateCloud(seg);
+        } catch {
+          if (!this.translateFallbackWarned) {
+            this.translateFallbackWarned = true;
+            this.emitError(
+              new Error(
+                "本地翻译不可用且云端翻译失败（可能 Gemini 配额耗尽）。建议切到「云端翻译」模式（用 Soniox 内置翻译，不消耗 LLM 配额）。"
+              ),
+              "translator_unavailable",
+              true
+            );
+          }
+        }
         return;
       }
       await this.patchSegmentTranslation(seg, translatedText);
