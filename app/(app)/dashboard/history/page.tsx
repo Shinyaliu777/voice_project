@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Folder as FolderIcon, Inbox } from "lucide-react";
+import { FolderCardMenu } from "@/components/FolderCardMenu";
 import { AppHeader } from "@/components/AppHeader";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
@@ -80,32 +81,39 @@ export default async function HistoryPage() {
           </Link>
 
           {folders.map((folder) => (
-            <Link
+            <div
               key={folder.id}
-              href={`/dashboard/history/folder/${folder.id}`}
-              className="group flex items-start gap-3 rounded-[10px] border border-zinc-100 bg-white p-4 transition hover:border-zinc-200 hover:bg-zinc-50"
+              className="group relative rounded-[10px] border border-zinc-100 bg-white transition hover:border-zinc-200 hover:bg-zinc-50"
             >
-              <div
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
-                style={{
-                  backgroundColor: folder.color
-                    ? `${folder.color}1a`
-                    : "#f4f4f5",
-                  color: folder.color ?? "#71717a",
-                }}
+              <Link
+                href={`/dashboard/history/folder/${folder.id}`}
+                className="flex items-start gap-3 p-4"
               >
-                <FolderIcon className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-medium text-zinc-900">
-                  {folder.name}
+                <div
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
+                  style={{
+                    backgroundColor: folder.color
+                      ? `${folder.color}1a`
+                      : "#f4f4f5",
+                    color: folder.color ?? "#71717a",
+                  }}
+                >
+                  <FolderIcon className="h-5 w-5" />
                 </div>
-                <div className="mt-0.5 text-xs text-zinc-500">
-                  {folder._count.sessions} 个录音 · {folder._count.documents}{" "}
-                  份文档
+                <div className="min-w-0 flex-1 pr-8">
+                  <div className="truncate font-medium text-zinc-900">
+                    {folder.name}
+                  </div>
+                  <div className="mt-0.5 text-xs text-zinc-500">
+                    {folder._count.sessions} 个录音 ·{" "}
+                    {folder._count.documents} 份文档
+                  </div>
                 </div>
-              </div>
-            </Link>
+              </Link>
+              <FolderCardMenu
+                folder={{ id: folder.id, name: folder.name, color: folder.color }}
+              />
+            </div>
           ))}
         </div>
       </section>
