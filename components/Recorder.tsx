@@ -8,6 +8,8 @@ import {
   ArrowRight,
   Loader2,
   Mic,
+  Pause,
+  Play,
   Radio,
   RefreshCw,
   Share2,
@@ -507,6 +509,32 @@ export function Recorder({
           >
             <Share2 className="h-4 w-4" />
             <span>实时分享</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              const rec = recorderRef.current;
+              if (!rec) return;
+              if (state.status === "paused") {
+                await rec.resume();
+              } else if (state.status === "recording") {
+                await rec.pause();
+              }
+            }}
+            disabled={state.status !== "recording" && state.status !== "paused"}
+          >
+            {state.status === "paused" ? (
+              <>
+                <Play className="h-4 w-4" />
+                <span>继续</span>
+              </>
+            ) : (
+              <>
+                <Pause className="h-4 w-4" />
+                <span>暂停</span>
+              </>
+            )}
           </Button>
           <Button variant="destructive" size="sm" onClick={stopRecording}>
             <Square className="h-4 w-4" />
