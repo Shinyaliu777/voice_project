@@ -173,7 +173,12 @@ export function Recorder({
   const [audioSource, setAudioSource] = React.useState<AudioSource>(defaultAudioSource);
   const [sourceLang, setSourceLang] = React.useState(defaultSourceLang);
   const [targetLang, setTargetLang] = React.useState(defaultTargetLang);
-  const [translationMode, setTranslationMode] = React.useState<TranslationMode>("local");
+  // Default to "cloud" = Soniox two-way in WS. It costs Soniox minutes but
+  // works with just a SONIOX_API_KEY and gives the inline / paired UX from
+  // the very first sentence. Switch to "local" only after confirming
+  // chrome://flags/#translation-api is enabled and the language model is
+  // downloaded.
+  const [translationMode, setTranslationMode] = React.useState<TranslationMode>("cloud");
   const [displayMode, setDisplayMode] = React.useState<DisplayMode>("translation-emphasis");
 
   const swapLanguages = React.useCallback(() => {

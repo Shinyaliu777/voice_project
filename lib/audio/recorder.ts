@@ -1110,7 +1110,20 @@ export class Recorder {
     if (!seg.sourceText) return;
     try {
       const translator = await this.getOrCreateChromeTranslator();
-      if (!translator) return;
+      if (!translator) {
+        // Chrome's Translator API isn't usable. Don't silently fail —
+        // surface a clear, recoverable error so the UI can prompt the user
+        // to switch to 云端 (Soniox two-way) instead.
+        this.emitError(
+          new Error(
+            "本地翻译不可用：请切换到 云端 模式（用 Soniox 内置翻译），" +
+              "或在 chrome://flags/#translation-api 启用浏览器原生翻译。"
+          ),
+          "translator_unavailable",
+          true
+        );
+        return;
+      }
       const translatedText = await translator.translate(seg.sourceText);
       await this.patchSegmentTranslation(seg, translatedText);
     } catch (err) {
