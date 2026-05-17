@@ -870,14 +870,20 @@ function UtteranceCard({
         )}
       </div>
       {utterance.sourceText ? (
-        <p className={cn(sourceClass, isLive && displayMode === "source-emphasis" && "font-medium")}>
+        <p
+          className={cn(
+            "min-w-0 break-words [overflow-wrap:anywhere]",
+            sourceClass,
+            isLive && displayMode === "source-emphasis" && "font-medium"
+          )}
+        >
           {utterance.sourceText}
         </p>
       ) : null}
       {hasTranslation ? (
         <p
           className={cn(
-            "mt-1",
+            "mt-1 min-w-0 break-words [overflow-wrap:anywhere]",
             translationClass,
             isLive && displayMode === "translation-emphasis" && "font-medium"
           )}
