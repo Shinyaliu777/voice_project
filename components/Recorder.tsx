@@ -441,10 +441,20 @@ export function Recorder({
   elapsedRef.current = elapsedMs;
   const getCurrentMs = React.useCallback(() => elapsedRef.current, []);
 
-  // Latest utterance for the floating subtitle window.
-  const latestUtterance = React.useMemo<Utterance | null>(() => {
-    if (state.order.length === 0) return null;
-    return state.byId[state.order[state.order.length - 1]] ?? null;
+  // Scrolling history for the floating subtitle window — last few finalized
+  // utterances + the live one. Newest last so the PiP can keep scrolling to
+  // the bottom and behave like a teleprompter.
+  const floatingItems = React.useMemo(() => {
+    const tail = state.order.slice(-6);
+    return tail
+      .map((id) => state.byId[id])
+      .filter(Boolean)
+      .map((u, idx, arr) => ({
+        id: u.id,
+        sourceText: u.sourceText,
+        translatedText: u.translatedText ?? "",
+        isLive: !u.isFinal && idx === arr.length - 1,
+      }));
   }, [state.order, state.byId]);
 
   const showTranslation = translationMode !== "off";
@@ -572,8 +582,7 @@ export function Recorder({
             />
           )}
           <FloatingSubtitleToggle
-            latestSourceText={latestUtterance?.sourceText ?? ""}
-            latestTranslatedText={latestUtterance?.translatedText ?? ""}
+            items={floatingItems}
             recording={recording}
             showTranslation={showTranslation}
           />

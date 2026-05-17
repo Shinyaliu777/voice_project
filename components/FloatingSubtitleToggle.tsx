@@ -5,7 +5,10 @@ import * as ReactDOM from "react-dom";
 import { PictureInPicture2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { FloatingSubtitleWindow } from "@/components/FloatingSubtitleWindow";
+import {
+  FloatingSubtitleWindow,
+  type FloatingSubtitleItem,
+} from "@/components/FloatingSubtitleWindow";
 
 // ----------------------------------------------------------------------
 // Document Picture-in-Picture global shim
@@ -36,10 +39,8 @@ function getDocumentPiP(): DocumentPiPController | null {
 // ----------------------------------------------------------------------
 
 export interface FloatingSubtitleToggleProps {
-  /** Current latest non-translation source text (concatenated tail of tokens). */
-  latestSourceText: string;
-  /** Current latest translation text. */
-  latestTranslatedText: string;
+  /** Newest item last. Shown as a scrolling history in the PiP window. */
+  items: FloatingSubtitleItem[];
   /** Whether the recorder is actively producing tokens. */
   recording: boolean;
   /** Whether translation column has anything to show. */
@@ -53,8 +54,7 @@ export interface FloatingSubtitleToggleProps {
 }
 
 export function FloatingSubtitleToggle({
-  latestSourceText,
-  latestTranslatedText,
+  items,
   recording,
   showTranslation,
   closeSignal,
@@ -194,8 +194,7 @@ export function FloatingSubtitleToggle({
       {open && container
         ? ReactDOM.createPortal(
             <FloatingSubtitleWindow
-              latestSourceText={latestSourceText}
-              latestTranslatedText={latestTranslatedText}
+              items={items}
               showTranslation={showTranslation}
               recording={recording}
               fontScale={fontScale}
