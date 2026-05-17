@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Bookmark as BookmarkIcon } from "lucide-react";
+import { ArrowLeft, Bookmark as BookmarkIcon, MessageSquare } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { AudioPlayer } from "@/components/AudioPlayer";
 import { TranscriptView } from "@/components/TranscriptView";
 import { MinutesView } from "@/components/MinutesView";
@@ -171,6 +172,12 @@ export default async function SessionDetailPage({
             audioUrl={audioUrl}
             title={session.title || "未命名录音"}
           />
+          <Button variant="outline" size="sm" asChild>
+            <Link href={`/dashboard/chat/new?sessionId=${session.id}`}>
+              <MessageSquare className="h-4 w-4" />
+              <span>问问这段录音</span>
+            </Link>
+          </Button>
           <ShareDialog sessionId={session.id} title={session.title} />
           <ExportMenu sessionId={session.id} />
         </div>

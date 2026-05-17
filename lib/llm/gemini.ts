@@ -9,7 +9,7 @@ import type {
   LLMProvider,
 } from "@/lib/contracts";
 
-const DEFAULT_MODEL = "gemini-2.0-flash";
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
 /**
  * Pull every `role: "system"` message off the front-or-mixed message list,

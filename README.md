@@ -15,7 +15,7 @@ Built around **Soniox** for streaming ASR + two-way translation, with an optiona
 - **Speaker diarization** — color-coded `Speaker N` chips driven by Soniox's speaker IDs.
 - **Auto-direction translation** — speak Chinese while configured for `EN → ZH` and the recorder flips the translator direction on the fly (only when one side is CJK and the other isn't, to avoid JA↔ZH ambiguity).
 - **Post-recording artifacts**
-  - LLM-generated minutes (`gemini-2.0-flash` by default).
+  - LLM-generated minutes (`gemini-2.5-flash` by default).
   - Chat over the transcript.
   - Vocabulary lookup + SM-2 flashcards.
   - Polls during the lecture.

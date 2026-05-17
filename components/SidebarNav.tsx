@@ -46,7 +46,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { href: "/dashboard", label: "首页", icon: Home, kind: "link" },
   { href: "/dashboard/history", label: "文件夹", icon: Folder, kind: "link" },
   { href: "/dashboard/vocabulary", label: "词汇本", icon: BookOpen, kind: "link" },
-  { label: "对话", icon: MessageSquare, kind: "button" },
+  { href: "/dashboard/chat/new", label: "对话", icon: MessageSquare, kind: "link" },
   { href: "/dashboard/shared-with-me", label: "共享", icon: Share2, kind: "link" },
   { href: "/dashboard/polls", label: "投票", icon: Vote, kind: "link" },
   { label: "设置", icon: Settings, kind: "button", action: "settings" },
@@ -194,6 +194,8 @@ export function SidebarNav({
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/dashboard") return pathname === "/dashboard";
+  // Treat any /dashboard/chat/* route as the chat section.
+  if (href.startsWith("/dashboard/chat")) return pathname.startsWith("/dashboard/chat");
   return pathname === href || pathname.startsWith(href + "/");
 }
 
