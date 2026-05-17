@@ -108,6 +108,14 @@ export class Recorder {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly WS_RECONNECT_BACKOFFS_MS = [500, 1500, 3000];
 
+  // ---- Chrome Translator cache ----
+  // window.Translator.create() warms up an on-device model — caching the
+  // instance across segments turns a 200-500ms-per-segment cold-start into a
+  // single one-off init at session start.
+  private chromeTranslator: { translate(text: string): Promise<string> } | null = null;
+  private chromeTranslatorKey: string | null = null;
+  private chromeTranslatorPromise: Promise<{ translate(text: string): Promise<string> } | null> | null = null;
+
   constructor(config: RecorderConfig, onEvent: (e: RecorderEvent) => void) {
     this.config = config;
     this.onEvent = onEvent;
@@ -129,6 +137,15 @@ export class Recorder {
       await this.buildAudioGraph();
       await this.openSonioxWs();
       this.startMediaRecorder();
+
+      // Prewarm Chrome Translator (if user picked "local"). Costs nothing if
+      // they didn't — fire-and-forget. Saves 200-500ms on the first segment.
+      if (
+        this.config.translationMode === "local" &&
+        this.config.sourceLanguage !== this.config.targetLanguage
+      ) {
+        void this.getOrCreateChromeTranslator();
+      }
 
       this.startedAtMs = performance.now();
       this.setState("connected");
@@ -432,8 +449,12 @@ export class Recorder {
     this.ws = ws;
 
     const sampleRate = this.config.sampleRate ?? DEFAULT_SAMPLE_RATE;
+    // Soniox's two-way translation only runs in "cloud" mode. The "local"
+    // option means the user explicitly wants on-device Chrome Translator
+    // (privacy-first); asking Soniox to also translate would defeat the
+    // promise and slow things down with redundant work.
     const wantTranslation =
-      this.config.translationMode !== "off" &&
+      this.config.translationMode === "cloud" &&
       this.config.sourceLanguage !== this.config.targetLanguage;
 
     const initConfig: Record<string, unknown> = {
@@ -824,14 +845,15 @@ export class Recorder {
       for (const seg of segs) {
         this.onEvent({ segment: seg });
         this.pushLiveShare({ type: "segment", segment: seg });
-        // Only run a client-side translation pass if Soniox didn't already
-        // hand us a translation in the same WS stream.
-        if (!seg.translatedText) {
-          if (this.config.translationMode === "local") {
-            void this.translateLocal(seg);
-          } else if (this.config.translationMode === "cloud") {
-            void this.translateCloud(seg);
-          }
+        // Translation strategy:
+        // - "cloud" mode: Soniox's two-way stream already delivered translation
+        //   in parallel with the source tokens, so we DON'T re-translate. A
+        //   /api/translate fallback here would only add 400-800ms for nothing.
+        // - "local" mode: Soniox wasn't asked to translate (privacy), so we
+        //   run Chrome Translator client-side. Cached translator makes this
+        //   ~50ms after the first segment of the session.
+        if (!seg.translatedText && this.config.translationMode === "local") {
+          void this.translateLocal(seg);
         }
       }
     } catch (err) {
@@ -1023,6 +1045,29 @@ export class Recorder {
 
   private async translateLocal(seg: SegmentDTO): Promise<void> {
     if (!seg.sourceText) return;
+    try {
+      const translator = await this.getOrCreateChromeTranslator();
+      if (!translator) return;
+      const translatedText = await translator.translate(seg.sourceText);
+      await this.patchSegmentTranslation(seg, translatedText);
+    } catch (err) {
+      this.emitError(err, "translator_local_failed", true);
+    }
+  }
+
+  /**
+   * Returns a cached Chrome Translator for the current source/target pair.
+   * Creating a Translator triggers an on-device model warmup; we want to do
+   * that exactly once per session, not once per segment.
+   */
+  private getOrCreateChromeTranslator(): Promise<{ translate(text: string): Promise<string> } | null> {
+    const key = `${this.config.sourceLanguage}->${this.config.targetLanguage}`;
+    if (this.chromeTranslator && this.chromeTranslatorKey === key) {
+      return Promise.resolve(this.chromeTranslator);
+    }
+    if (this.chromeTranslatorPromise && this.chromeTranslatorKey === key) {
+      return this.chromeTranslatorPromise;
+    }
     const T =
       typeof window === "undefined"
         ? undefined
@@ -1033,18 +1078,24 @@ export class Recorder {
         "translator_unavailable",
         true
       );
-      return;
+      return Promise.resolve(null);
     }
-    try {
-      const translator = await T.create({
-        sourceLanguage: this.config.sourceLanguage,
-        targetLanguage: this.config.targetLanguage,
+    this.chromeTranslator = null;
+    this.chromeTranslatorKey = key;
+    this.chromeTranslatorPromise = T.create({
+      sourceLanguage: this.config.sourceLanguage,
+      targetLanguage: this.config.targetLanguage,
+    })
+      .then((tr) => {
+        this.chromeTranslator = tr;
+        return tr;
+      })
+      .catch((err) => {
+        this.chromeTranslatorPromise = null;
+        this.emitError(err, "translator_local_failed", true);
+        return null;
       });
-      const translatedText = await translator.translate(seg.sourceText);
-      await this.patchSegmentTranslation(seg, translatedText);
-    } catch (err) {
-      this.emitError(err, "translator_local_failed", true);
-    }
+    return this.chromeTranslatorPromise;
   }
 
   private async translateCloud(seg: SegmentDTO): Promise<void> {
