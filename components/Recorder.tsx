@@ -446,52 +446,48 @@ export function Recorder({
     [sessionId, targetLang, minutesStatus]
   );
 
-  // Auto-refresh "实时纪要" while recording. Matched to lecsync's observed
-  // cadence — they refresh roughly every 2 minutes (a 130s session produces a
-  // single chapter), not every few seconds. Triggers when EITHER:
-  //   - 12+ new finalized utterances since the last refresh AND 60s+ elapsed
-  //     (fast talker hit content threshold), OR
-  //   - 120s+ elapsed AND 5+ new finalized utterances (slow talker, periodic)
-  // The first refresh waits until at least 90s elapsed AND 8 finalized so the
-  // model has real material — otherwise we churn LLM calls on the first 4
-  // throwaway utterances ("hello, hello, testing").
+  // Auto-refresh "实时纪要" while recording. Matched to lecsync's actual
+  // trigger logic (extracted from their bundle):
+  //   minCharactersForUpdate: 2000
+  //   onFinalTranscript: append to buffer; if accumulated NEW-text length
+  //   ≥ 2000 chars AND not already streaming → triggerSummaryUpdate().
+  //
+  // Skip utterances with trim().length < 3 (filler "啊"/"嗯"/etc.). The
+  // accumulated count resets to 0 after each successful refresh.
+  //
+  // This is purely content-volume driven, not clock-driven — naturally
+  // produces uneven refresh intervals depending on speech density.
+  const lastMinutesCharsRef = React.useRef<number>(0);
   React.useEffect(() => {
     if (state.status !== "recording") return;
     if (minutesStatus === "streaming") return;
     if (!sessionId) return;
-    if (state.startedAt == null) return;
 
     let finalCount = 0;
+    let totalChars = 0;
     for (const id of state.order) {
-      if (state.byId[id]?.isFinal) finalCount++;
+      const u = state.byId[id];
+      if (!u?.isFinal) continue;
+      finalCount++;
+      const t = u.sourceText.trim();
+      if (t.length >= 3) totalChars += t.length;
     }
-    const delta = finalCount - lastMinutesFinalCountRef.current;
-    if (delta <= 0) return;
+    const newChars = totalChars - lastMinutesCharsRef.current;
+    if (newChars < 2000) return;
 
-    const now = Date.now();
-    const elapsed = now - lastMinutesRefreshAtRef.current;
-    const isFirstRun = lastMinutesRefreshAtRef.current === 0;
-    // First-run elapsed is measured from recording start, not from 0.
-    const elapsedSinceStart = now - state.startedAt;
-
-    const trigger =
-      (isFirstRun && elapsedSinceStart >= 90_000 && finalCount >= 8) ||
-      (!isFirstRun && elapsed >= 60_000 && delta >= 12) ||
-      (!isFirstRun && elapsed >= 120_000 && delta >= 5);
-
-    if (!trigger) return;
-
-    lastMinutesRefreshAtRef.current = now;
+    lastMinutesCharsRef.current = totalChars;
     lastMinutesFinalCountRef.current = finalCount;
+    lastMinutesRefreshAtRef.current = Date.now();
     void refreshLiveMinutes({ silent: true });
-  }, [state.status, state.startedAt, state.byId, state.order, sessionId, minutesStatus, refreshLiveMinutes]);
+  }, [state.status, state.byId, state.order, sessionId, minutesStatus, refreshLiveMinutes]);
 
   // Reset auto-refresh bookkeeping each time recording (re)starts so a new
-  // session doesn't inherit the previous session's "last refreshed at" timer.
+  // session doesn't inherit the previous session's accumulated counters.
   React.useEffect(() => {
     if (state.status === "recording" && state.startedAt != null) {
       lastMinutesRefreshAtRef.current = 0;
       lastMinutesFinalCountRef.current = 0;
+      lastMinutesCharsRef.current = 0;
     }
   }, [state.status, state.startedAt]);
 
