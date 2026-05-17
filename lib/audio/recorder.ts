@@ -29,6 +29,10 @@ import type {
 // -------- Chrome Translator API shape (lib/translation/chrome-local.ts owns the global) --------
 
 interface ChromeTranslator {
+  availability(opts: {
+    sourceLanguage: string;
+    targetLanguage: string;
+  }): Promise<string>;
   create(opts: {
     sourceLanguage: string;
     targetLanguage: string;
@@ -1075,7 +1079,7 @@ export class Recorder {
         const utteranceId = indexToUtteranceId.get(seg.segmentIndex);
         if (utteranceId) this.segmentToUtterance.set(seg.id, utteranceId);
         this.onEvent({ segment: seg });
-        this.pushLiveShare({ type: "segment", segment: seg });
+        this.pushLiveShare({ type: "segment", segment: seg, utteranceId });
         // Translation strategy:
         // - "cloud" mode: Soniox's two-way stream already delivered translation
         //   in parallel with the source tokens, so we DON'T re-translate. A
@@ -1283,14 +1287,10 @@ export class Recorder {
     try {
       const translatedText = await this.translateAutoDirection(seg.sourceText);
       if (translatedText == null) {
-        this.emitError(
-          new Error(
-            "本地翻译不可用：请切换到 云端 模式（用 Soniox 内置翻译），" +
-              "或在 chrome://flags/#translation-api 启用浏览器原生翻译。"
-          ),
-          "translator_unavailable",
-          true
-        );
+        // Chrome Translator model isn't available for this pair (downloadable
+        // outside a user gesture, or API disabled). Fall back to the cloud
+        // route so the user still sees a translation instead of a blank card.
+        await this.translateCloud(seg);
         return;
       }
       await this.patchSegmentTranslation(seg, translatedText);
@@ -1316,22 +1316,28 @@ export class Recorder {
         ? undefined
         : ((window as unknown as { Translator?: ChromeTranslator }).Translator);
     if (!T) {
-      this.emitError(
-        new Error("window.Translator is unavailable in this browser"),
-        "translator_unavailable",
-        true
-      );
       return Promise.resolve(null);
     }
-    const p: Promise<{ translate(text: string): Promise<string> } | null> = T.create(
-      { sourceLanguage: src, targetLanguage: tgt }
-    )
-      .then((tr) => tr)
-      .catch((err) => {
+    // Check availability before create(). Calling create() on a "downloadable"
+    // pair throws "user gesture required" — and the recorder doesn't run
+    // inside a user gesture (the click was consumed by the session-POST
+    // awaiting before we got here). Returning null here lets the caller fall
+    // back to cloud translation silently.
+    const p: Promise<{ translate(text: string): Promise<string> } | null> = (async () => {
+      try {
+        const a = await T.availability({ sourceLanguage: src, targetLanguage: tgt });
+        if (a !== "available" && a !== "downloading") {
+          // "downloadable" or "unavailable" — we can't create from here.
+          this.chromeTranslators.delete(key);
+          return null;
+        }
+        return await T.create({ sourceLanguage: src, targetLanguage: tgt });
+      } catch (err) {
         this.chromeTranslators.delete(key);
         this.emitError(err, "translator_local_failed", true);
         return null;
-      });
+      }
+    })();
     this.chromeTranslators.set(key, p);
     return p;
   }
@@ -1346,11 +1352,23 @@ export class Recorder {
     if (!text) return null;
     const src = this.config.sourceLanguage;
     const tgt = this.config.targetLanguage;
-    const cjkChars = (text.match(/[一-鿿぀-ヿ가-힯]/g) || []).length;
-    const totalNonSpace = text.replace(/\s+/g, "").length;
-    const textIsCJK = totalNonSpace > 0 && cjkChars / totalNonSpace > 0.3;
+    const srcIsCJK = /^(zh|ja|ko)/i.test(src);
     const tgtIsCJK = /^(zh|ja|ko)/i.test(tgt);
-    const [from, to] = textIsCJK === tgtIsCJK ? [tgt, src] : [src, tgt];
+    let from: string;
+    let to: string;
+    if (srcIsCJK === tgtIsCJK) {
+      // Both sides CJK (e.g. JA↔ZH) or neither CJK (e.g. EN↔ES). The
+      // character-class heuristic can't distinguish them, so trust the
+      // configured direction.
+      from = src;
+      to = tgt;
+    } else {
+      // Exactly one side is CJK — detect which side the speech is on.
+      const cjkChars = (text.match(/[一-鿿぀-ヿ가-힯]/g) || []).length;
+      const totalNonSpace = text.replace(/\s+/g, "").length;
+      const textIsCJK = totalNonSpace > 0 && cjkChars / totalNonSpace > 0.3;
+      [from, to] = textIsCJK === tgtIsCJK ? [tgt, src] : [src, tgt];
+    }
     if (from === to) return text;
     const translator = await this.getOrCreateChromeTranslator(from, to);
     if (!translator) return null;
@@ -1396,11 +1414,11 @@ export class Recorder {
       }
       const updated = (await res.json()) as SegmentDTO;
       this.onEvent({ segment: updated });
-      this.pushLiveShare({ type: "segment", segment: updated });
+      const utteranceId = this.segmentToUtterance.get(updated.id);
+      this.pushLiveShare({ type: "segment", segment: updated, utteranceId });
       // Bridge the translation back to the live utterance card the UI is
       // rendering. Without this the Card never re-renders with translated
       // text because the UI listens for `utterance` events, not segment ones.
-      const utteranceId = this.segmentToUtterance.get(updated.id);
       if (utteranceId) {
         this.onEvent({
           utterance: {

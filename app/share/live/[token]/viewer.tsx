@@ -27,16 +27,26 @@ interface DisplayUtterance {
 type Action =
   | { type: "init"; segments: SegmentDTO[]; session: SessionDTO }
   | { type: "utterance"; value: Utterance }
-  | { type: "segment"; value: SegmentDTO };
+  | { type: "segment"; value: SegmentDTO; utteranceId?: string };
 
 interface State {
   title: string;
   order: string[];
   byId: Record<string, DisplayUtterance>;
+  /** Maps an in-flight utterance id to its finalized segment id (once the
+   *  segment has been persisted). Used so we can splice the segment update
+   *  into the slot the utterance already occupies, instead of appending a
+   *  duplicate card under the segment's CUID. */
+  utteranceToSegment: Record<string, string>;
 }
 
 function initial(initialTitle: string): State {
-  return { title: initialTitle, order: [], byId: {} };
+  return {
+    title: initialTitle,
+    order: [],
+    byId: {},
+    utteranceToSegment: {},
+  };
 }
 
 function fromSegment(seg: SegmentDTO): DisplayUtterance {
@@ -61,6 +71,45 @@ function fromUtterance(u: Utterance): DisplayUtterance {
   };
 }
 
+/** Tolerance in ms when matching two events to the same utterance slot by
+ *  (speaker, startMs). Soniox sometimes rewinds endMs/startMs by a few hundred
+ *  ms across emits, so an exact equality check would miss duplicates. */
+const SAME_SLOT_TOLERANCE_MS = 1500;
+
+function findSlotByPosition(
+  state: State,
+  speakerId: number | null,
+  startMs: number
+): string | null {
+  for (const id of state.order) {
+    const u = state.byId[id];
+    if (!u) continue;
+    if (u.speakerId !== speakerId) continue;
+    if (Math.abs(u.startMs - startMs) <= SAME_SLOT_TOLERANCE_MS) return id;
+  }
+  return null;
+}
+
+/** Replace a slot's key (e.g. swap in-flight utterance id for persisted segment
+ *  id) without reordering. */
+function replaceSlotKey(
+  state: State,
+  oldId: string,
+  newId: string,
+  payload: DisplayUtterance
+): State {
+  if (oldId === newId) {
+    return { ...state, byId: { ...state.byId, [newId]: payload } };
+  }
+  const byId: Record<string, DisplayUtterance> = {};
+  for (const [k, v] of Object.entries(state.byId)) {
+    if (k !== oldId) byId[k] = v;
+  }
+  byId[newId] = payload;
+  const order = state.order.map((id) => (id === oldId ? newId : id));
+  return { ...state, byId, order };
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "init": {
@@ -74,20 +123,89 @@ function reducer(state: State, action: Action): State {
         title: action.session.title || state.title,
         order,
         byId,
+        utteranceToSegment: {},
       };
     }
     case "utterance": {
       const next = fromUtterance(action.value);
-      const existing = state.byId[next.id];
-      const byId = { ...state.byId, [next.id]: next };
-      const order = existing ? state.order : [...state.order, next.id];
-      return { ...state, byId, order };
+      // 1. Already mapped to a finalized segment slot — route there.
+      const mappedSegId = state.utteranceToSegment[next.id];
+      if (mappedSegId && state.byId[mappedSegId]) {
+        return replaceSlotKey(state, mappedSegId, mappedSegId, {
+          ...next,
+          id: mappedSegId,
+        });
+      }
+      // 2. Slot already exists under this exact utterance id — update in place.
+      if (state.byId[next.id]) {
+        return { ...state, byId: { ...state.byId, [next.id]: next } };
+      }
+      // 3. Same speaker + similar startMs — merge into the existing slot rather
+      //    than appending a duplicate card. (Soniox sometimes re-emits an
+      //    utterance under a new id after a sentence split + immediate
+      //    re-finalize; without this we get two cards at the same timestamp.)
+      const neighborId = findSlotByPosition(state, next.speakerId, next.startMs);
+      if (neighborId) {
+        // Merge: prefer the longer source text, prefer existing translation if
+        // the new one is empty, otherwise take the new one.
+        const prev = state.byId[neighborId];
+        const merged: DisplayUtterance = {
+          id: neighborId,
+          speakerId: next.speakerId,
+          startMs: Math.min(prev.startMs, next.startMs),
+          sourceText:
+            next.sourceText.length >= prev.sourceText.length
+              ? next.sourceText
+              : prev.sourceText,
+          translatedText:
+            next.translatedText.length >= prev.translatedText.length
+              ? next.translatedText
+              : prev.translatedText,
+          isFinal: prev.isFinal || next.isFinal,
+        };
+        return { ...state, byId: { ...state.byId, [neighborId]: merged } };
+      }
+      // 4. Brand new slot.
+      return {
+        ...state,
+        byId: { ...state.byId, [next.id]: next },
+        order: [...state.order, next.id],
+      };
     }
     case "segment": {
       const next = fromSegment(action.value);
+      const uid = action.utteranceId;
+      // 1. Segment knows its utterance — swap that slot's key in place.
+      if (uid && state.byId[uid]) {
+        const ns = replaceSlotKey(state, uid, next.id, next);
+        return {
+          ...ns,
+          utteranceToSegment: { ...ns.utteranceToSegment, [uid]: next.id },
+        };
+      }
+      // 2. Segment id already known (e.g. PATCH update) — update in place.
+      if (state.byId[next.id]) {
+        return { ...state, byId: { ...state.byId, [next.id]: next } };
+      }
+      // 3. No mapping but a card already exists at this (speaker, startMs) —
+      //    treat it as the same utterance and swap the slot key.
+      const neighborId = findSlotByPosition(state, next.speakerId, next.startMs);
+      if (neighborId) {
+        const ns = replaceSlotKey(state, neighborId, next.id, next);
+        return uid
+          ? {
+              ...ns,
+              utteranceToSegment: { ...ns.utteranceToSegment, [uid]: next.id },
+            }
+          : ns;
+      }
+      // 4. Brand new slot.
       const byId = { ...state.byId, [next.id]: next };
-      const order = state.byId[next.id] ? state.order : [...state.order, next.id];
-      return { ...state, byId, order };
+      const order = [...state.order, next.id];
+      const utteranceToSegment = uid
+        ? { ...state.utteranceToSegment, [uid]: next.id }
+        : state.utteranceToSegment;
+      return { ...state, byId, order, utteranceToSegment };
     }
     default:
       return state;
@@ -176,8 +294,15 @@ export function LiveShareViewer({
       try {
         const data = JSON.parse((ev as MessageEvent).data) as {
           segment?: SegmentDTO;
+          utteranceId?: string;
         };
-        if (data.segment) dispatch({ type: "segment", value: data.segment });
+        if (data.segment) {
+          dispatch({
+            type: "segment",
+            value: data.segment,
+            utteranceId: data.utteranceId,
+          });
+        }
       } catch {
         /* ignore */
       }
@@ -193,12 +318,27 @@ export function LiveShareViewer({
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [state.order.length, state.byId]);
+  }, [state.order, state.byId]);
 
-  // Pick the in-flight (non-final) utterance for highlight.
+  // Sort cards by audio timeline (startMs) — insertion order isn't reliable
+  // because in-flight utterances can be added BEFORE earlier utterances finalize
+  // into segments.
+  const sortedOrder = React.useMemo(() => {
+    return [...state.order].sort((a, b) => {
+      const ua = state.byId[a];
+      const ub = state.byId[b];
+      if (!ua || !ub) return 0;
+      if (ua.startMs !== ub.startMs) return ua.startMs - ub.startMs;
+      // Stable tiebreaker so the live card always falls below its prior twin.
+      return a.localeCompare(b);
+    });
+  }, [state.order, state.byId]);
+
+  // Pick the in-flight (non-final) utterance for highlight — always the last
+  // non-final one in time order.
   let liveId: string | null = null;
-  for (let i = state.order.length - 1; i >= 0; i--) {
-    const u = state.byId[state.order[i]];
+  for (let i = sortedOrder.length - 1; i >= 0; i--) {
+    const u = state.byId[sortedOrder[i]];
     if (u && !u.isFinal) {
       liveId = u.id;
       break;
@@ -242,12 +382,12 @@ export function LiveShareViewer({
           ref={scrollerRef}
           className="flex max-h-[80vh] flex-col gap-3 overflow-y-auto"
         >
-          {state.order.length === 0 ? (
+          {sortedOrder.length === 0 ? (
             <div className="flex min-h-[50vh] items-center justify-center rounded-lg border border-zinc-200 bg-white p-12 text-sm text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900">
               正在等待第一句话…
             </div>
           ) : (
-            state.order.map((id) => {
+            sortedOrder.map((id) => {
               const u = state.byId[id];
               if (!u) return null;
               const isLive = u.id === liveId;
@@ -280,19 +420,31 @@ export function LiveShareViewer({
                       </Badge>
                     )}
                   </div>
-                  {u.sourceText ? (
+                  {u.translatedText ? (
+                    <>
+                      {u.sourceText ? (
+                        <p className="text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
+                          {u.sourceText}
+                        </p>
+                      ) : null}
+                      <p
+                        className={cn(
+                          "mt-1 leading-relaxed text-zinc-900 dark:text-zinc-50",
+                          isLive ? "text-xl font-semibold" : "text-lg font-medium"
+                        )}
+                      >
+                        {u.translatedText}
+                      </p>
+                    </>
+                  ) : u.sourceText ? (
+                    // No translation yet — promote source so the card isn't empty.
                     <p
                       className={cn(
-                        "text-base leading-relaxed text-zinc-900 dark:text-zinc-100",
-                        isLive && "font-medium"
+                        "leading-relaxed text-zinc-900 dark:text-zinc-50",
+                        isLive ? "text-xl font-semibold" : "text-lg font-medium"
                       )}
                     >
                       {u.sourceText}
-                    </p>
-                  ) : null}
-                  {u.translatedText ? (
-                    <p className="mt-1.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-                      {u.translatedText}
                     </p>
                   ) : null}
                 </div>
