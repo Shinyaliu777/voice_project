@@ -116,12 +116,15 @@ export async function POST(req: Request) {
     },
   });
 
-  // Build messages: system + prior history + new user message
+  // Build messages: system + prior history + new user message.
+  //
+  // Important: only pass `recordingTitle` when a recording is actually bound.
+  // Falling back to `chatSession.title` here causes the assistant to think
+  // every conversation refers to a recording — the very bug we're fixing.
   const systemContent = buildChatSystemPrompt({
-    sessionTitle:
-      parentSession?.title ?? chatSession.title ?? "Untitled recording",
-    sourceLang: parentSession?.sourceLang ?? "en",
-    targetLang: parentSession?.targetLang ?? "en",
+    recordingTitle: parentSession?.title ?? null,
+    sourceLang: parentSession?.sourceLang,
+    targetLang: parentSession?.targetLang,
     transcriptSnippet,
   });
   const history: LLMMessage[] = chatSession.messages.map((m) => ({
