@@ -446,17 +446,20 @@ export function Recorder({
     [sessionId, targetLang, minutesStatus]
   );
 
-  // Auto-refresh "实时纪要" while recording. Triggers when EITHER:
-  //   - 5+ finalized utterances since the last refresh (covers fast talkers
-  //     who pile up content quickly), OR
-  //   - 45+ seconds elapsed AND at least 2 new finalized utterances (covers
-  //     slow talkers where we still want a periodic refresh)
-  // The first refresh fires once we have 4+ finalized utterances so the user
-  // sees something appear without waiting a full minute.
+  // Auto-refresh "实时纪要" while recording. Matched to lecsync's observed
+  // cadence — they refresh roughly every 2 minutes (a 130s session produces a
+  // single chapter), not every few seconds. Triggers when EITHER:
+  //   - 12+ new finalized utterances since the last refresh AND 60s+ elapsed
+  //     (fast talker hit content threshold), OR
+  //   - 120s+ elapsed AND 5+ new finalized utterances (slow talker, periodic)
+  // The first refresh waits until at least 90s elapsed AND 8 finalized so the
+  // model has real material — otherwise we churn LLM calls on the first 4
+  // throwaway utterances ("hello, hello, testing").
   React.useEffect(() => {
     if (state.status !== "recording") return;
     if (minutesStatus === "streaming") return;
     if (!sessionId) return;
+    if (state.startedAt == null) return;
 
     let finalCount = 0;
     for (const id of state.order) {
@@ -468,18 +471,20 @@ export function Recorder({
     const now = Date.now();
     const elapsed = now - lastMinutesRefreshAtRef.current;
     const isFirstRun = lastMinutesRefreshAtRef.current === 0;
+    // First-run elapsed is measured from recording start, not from 0.
+    const elapsedSinceStart = now - state.startedAt;
 
     const trigger =
-      (isFirstRun && finalCount >= 4) ||
-      (!isFirstRun && delta >= 5) ||
-      (!isFirstRun && elapsed >= 45_000 && delta >= 2);
+      (isFirstRun && elapsedSinceStart >= 90_000 && finalCount >= 8) ||
+      (!isFirstRun && elapsed >= 60_000 && delta >= 12) ||
+      (!isFirstRun && elapsed >= 120_000 && delta >= 5);
 
     if (!trigger) return;
 
     lastMinutesRefreshAtRef.current = now;
     lastMinutesFinalCountRef.current = finalCount;
     void refreshLiveMinutes({ silent: true });
-  }, [state.status, state.byId, state.order, sessionId, minutesStatus, refreshLiveMinutes]);
+  }, [state.status, state.startedAt, state.byId, state.order, sessionId, minutesStatus, refreshLiveMinutes]);
 
   // Reset auto-refresh bookkeeping each time recording (re)starts so a new
   // session doesn't inherit the previous session's "last refreshed at" timer.
