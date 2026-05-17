@@ -23,6 +23,14 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -185,6 +193,8 @@ export function Recorder({
   const recorderRef = React.useRef<AudioRecorder | null>(null);
   const [nowTs, setNowTs] = React.useState(0);
   const [liveShareOpen, setLiveShareOpen] = React.useState(false);
+
+  const [stopConfirmOpen, setStopConfirmOpen] = React.useState(false);
 
   const [minutesSections, setMinutesSections] = React.useState<MinutesSection[]>([]);
   const [minutesStatus, setMinutesStatus] = React.useState<"idle" | "streaming" | "error">("idle");
@@ -533,7 +543,11 @@ export function Recorder({
               </>
             )}
           </Button>
-          <Button variant="destructive" size="sm" onClick={stopRecording}>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setStopConfirmOpen(true)}
+          >
             <Square className="h-4 w-4" />
             <span>结束录制</span>
           </Button>
@@ -595,6 +609,35 @@ export function Recorder({
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>结束录制？</DialogTitle>
+            <DialogDescription>
+              结束后将立即停止转写、上传剩余音频并跳转到详情页。当前进行中的句子会被记入。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setStopConfirmOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setStopConfirmOpen(false);
+                void stopRecording();
+              }}
+            >
+              <Square className="h-4 w-4" />
+              <span>结束录制</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
