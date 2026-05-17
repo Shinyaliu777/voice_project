@@ -65,7 +65,10 @@ export function SidebarNav({
   return (
     <aside
       className={cn(
-        "flex h-screen w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/60 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/60",
+        // sticky so the sidebar stays pinned while the main column scrolls.
+        // Without this the aside is h-screen but rendered inline — once the
+        // page grows past 100vh the whole sidebar scrolls away with it.
+        "sticky top-0 flex h-screen w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/60 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/60",
         className
       )}
     >
