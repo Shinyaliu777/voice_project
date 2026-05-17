@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { AudioSourcePicker } from "@/components/AudioSourcePicker";
 import { TranslationModePicker } from "@/components/TranslationModePicker";
+import { LocalTranslatorDialog } from "@/components/LocalTranslatorDialog";
 import { BookmarkInRecording } from "@/components/BookmarkInRecording";
 import { FloatingSubtitleToggle } from "@/components/FloatingSubtitleToggle";
 import { LiveShareDialog } from "@/components/LiveShareDialog";
@@ -179,6 +180,51 @@ export function Recorder({
   // chrome://flags/#translation-api is enabled and the language model is
   // downloaded.
   const [translationMode, setTranslationMode] = React.useState<TranslationMode>("cloud");
+  const [localSetupOpen, setLocalSetupOpen] = React.useState(false);
+
+  // Intercept "local" picks: probe Chrome's Translator API first. If the
+  // language pair is ready, switch immediately. If the model is downloadable
+  // or the API is missing, open the setup dialog so the user can either
+  // download the model in one click or fall back to cloud.
+  const handleTranslationModeChange = React.useCallback(
+    async (next: TranslationMode) => {
+      if (next !== "local") {
+        setTranslationMode(next);
+        return;
+      }
+      const T =
+        typeof window === "undefined"
+          ? null
+          : (
+              window as unknown as {
+                Translator?: {
+                  availability(opts: {
+                    sourceLanguage: string;
+                    targetLanguage: string;
+                  }): Promise<string>;
+                };
+              }
+            ).Translator ?? null;
+      if (!T) {
+        setLocalSetupOpen(true);
+        return;
+      }
+      try {
+        const a = await T.availability({
+          sourceLanguage: sourceLang,
+          targetLanguage: targetLang,
+        });
+        if (a === "available") {
+          setTranslationMode("local");
+        } else {
+          setLocalSetupOpen(true);
+        }
+      } catch {
+        setLocalSetupOpen(true);
+      }
+    },
+    [sourceLang, targetLang]
+  );
   const [displayMode, setDisplayMode] = React.useState<DisplayMode>("translation-emphasis");
 
   const swapLanguages = React.useCallback(() => {
@@ -433,7 +479,10 @@ export function Recorder({
             onChange={setTargetLang}
             ariaLabel="目标语言"
           />
-          <TranslationModePicker value={translationMode} onChange={setTranslationMode} />
+          <TranslationModePicker
+            value={translationMode}
+            onChange={handleTranslationModeChange}
+          />
         </div>
 
         {/* Hero mic button */}
@@ -463,6 +512,15 @@ export function Recorder({
             </button>
           </div>
         </div>
+
+        <LocalTranslatorDialog
+          open={localSetupOpen}
+          onOpenChange={setLocalSetupOpen}
+          sourceLanguage={sourceLang}
+          targetLanguage={targetLang}
+          onReady={() => setTranslationMode("local")}
+          onCancel={() => setTranslationMode("cloud")}
+        />
       </div>
     );
   }
