@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { Sparkles } from "lucide-react";
 import { FlashcardRecommendDialog } from "@/components/FlashcardRecommendDialog";
 import { FlashcardDeck } from "@/components/FlashcardDeck";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 import type { FlashcardDTO } from "@/lib/contracts";
@@ -59,7 +61,7 @@ export default async function VocabularyPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
-      <header className="mb-10">
+      <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
           再也不漏掉听到的每一个生词
         </h1>
@@ -67,6 +69,17 @@ export default async function VocabularyPage() {
           从录音里提取生词，按艾宾浩斯曲线复习，让记忆扎根
         </p>
       </header>
+
+      <Tabs defaultValue="vocabulary" className="mb-10 w-full">
+        <TabsList>
+          <TabsTrigger value="vocabulary" asChild>
+            <Link href="/dashboard/vocabulary">词汇</Link>
+          </TabsTrigger>
+          <TabsTrigger value="flashcards" asChild>
+            <Link href="/dashboard/vocabulary/flashcards">闪卡</Link>
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <section className="mb-12">
         <h2 className="mb-4 flex items-center gap-2 text-lg font-medium text-zinc-900">
