@@ -7,6 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toaster";
 import { getDevUser } from "@/lib/dev-user";
 
+// The entire authenticated shell depends on per-user DB data (current user,
+// sessions, folders, ...). Forcing dynamic rendering keeps Next from trying
+// to statically prerender pages like /dashboard/polls and /dashboard/search
+// at build time — they need a live request to be meaningful anyway.
+export const dynamic = "force-dynamic";
+
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await getDevUser();
 
