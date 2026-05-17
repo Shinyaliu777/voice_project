@@ -3,9 +3,16 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 import { getLLMProvider } from "@/lib/llm";
-import { buildMinutesPrompt } from "@/lib/prompts/minutes";
+import {
+  buildIncrementalMinutesPrompt,
+  buildMinutesPrompt,
+} from "@/lib/prompts/minutes";
 import { toSegmentDTO } from "@/lib/api/dto";
-import type { MinutesSection, MinutesStreamEvent } from "@/lib/contracts";
+import type {
+  IncrementalMinutesUpdate,
+  MinutesSection,
+  MinutesStreamEvent,
+} from "@/lib/contracts";
 
 const GenerateMinutesBodySchema = z
   .object({
@@ -13,6 +20,26 @@ const GenerateMinutesBodySchema = z
     styleHint: z.string().optional(),
   })
   .default({});
+
+const IncrementalSectionSchema = z.object({
+  title: z.string(),
+  points: z.array(z.string()),
+  timeStartMs: z.number().optional(),
+  timeEndMs: z.number().optional(),
+});
+const IncrementalBodySchema = z.object({
+  mode: z.literal("incremental"),
+  confirmedSections: z.array(IncrementalSectionSchema),
+  pendingSection: IncrementalSectionSchema.nullable().optional(),
+  newTranscripts: z.array(
+    z.object({
+      segmentId: z.string(),
+      text: z.string(),
+      timestamp: z.number(),
+    })
+  ),
+  language: z.string().optional(),
+});
 
 function composeContentMd(
   sections: MinutesSection[],
@@ -187,22 +214,39 @@ export async function POST(
   const userId = await getDevUserId();
   const { id: sessionId } = await params;
 
-  let body: z.infer<typeof GenerateMinutesBodySchema>;
+  let rawJson: unknown;
   try {
-    const json = await req.json().catch(() => ({}));
-    body = GenerateMinutesBodySchema.parse(json ?? {});
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Invalid request body" },
-      { status: 400 }
-    );
+    rawJson = await req.json().catch(() => ({}));
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
+
+  // Branch on whether this is the new incremental shape or the legacy full
+  // regeneration body. Incremental requests have `mode: "incremental"`.
+  const isIncremental =
+    typeof rawJson === "object" &&
+    rawJson !== null &&
+    (rawJson as { mode?: unknown }).mode === "incremental";
 
   const session = await prisma.session.findFirst({
     where: { id: sessionId, userId },
   });
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
+  }
+
+  if (isIncremental) {
+    return handleIncrementalStream(rawJson, session);
+  }
+
+  let body: z.infer<typeof GenerateMinutesBodySchema>;
+  try {
+    body = GenerateMinutesBodySchema.parse(rawJson ?? {});
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Invalid request body" },
+      { status: 400 }
+    );
   }
 
   const segments = await prisma.segment.findMany({
@@ -328,6 +372,131 @@ export async function POST(
         if (!finalized) {
           // ensure something is sent if for-await never produced data
         }
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+/**
+ * Incremental live-minutes stream. Client posts {confirmedSections,
+ * pendingSection?, newTranscripts, language} and we ask the LLM whether the
+ * topic shifted + what bullets to add. The response is sent as ONE SSE event
+ * (incremental_update). This is dramatically cheaper than re-feeding the
+ * whole transcript on every refresh — token use stays constant per call.
+ */
+async function handleIncrementalStream(
+  rawBody: unknown,
+  session: { id: string; sourceLang: string; targetLang: string }
+): Promise<Response> {
+  let body: z.infer<typeof IncrementalBodySchema>;
+  try {
+    body = IncrementalBodySchema.parse(rawBody);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Invalid body" },
+      { status: 400 }
+    );
+  }
+
+  // Empty newTranscripts → nothing to do; reply with a no-op update so the
+  // client can finish its in-flight stream without throwing.
+  if (body.newTranscripts.length === 0) {
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        const noop: IncrementalMinutesUpdate = {
+          topicChanged: false,
+          currentTopic: { title: body.pendingSection?.title ?? "", newPoints: [] },
+        };
+        controller.enqueue(
+          enc.encode(
+            `data: ${JSON.stringify({ type: "incremental_update", update: noop } satisfies MinutesStreamEvent)}\n\n`
+          )
+        );
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
+  const messages = buildIncrementalMinutesPrompt({
+    confirmedSections: body.confirmedSections,
+    pendingSection: body.pendingSection ?? null,
+    newTranscripts: body.newTranscripts,
+    sourceLang: session.sourceLang,
+    targetLang: body.language ?? session.targetLang,
+  });
+
+  const llm = getLLMProvider();
+  const enc = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (evt: MinutesStreamEvent) =>
+        controller.enqueue(enc.encode(`data: ${JSON.stringify(evt)}\n\n`));
+
+      try {
+        // Use non-streaming generate — output is small (one JSON object) and
+        // partial-JSON parsing complicates the consumer. Latency hit is
+        // negligible (~200-500ms) vs the simplicity gained.
+        const raw = await llm.generate(messages, {
+          responseFormat: "json",
+          maxTokens: 1024,
+        });
+        const stripped = raw
+          .trim()
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/```\s*$/i, "");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(stripped);
+        } catch {
+          const s = stripped.indexOf("{");
+          const e = stripped.lastIndexOf("}");
+          parsed = s >= 0 && e > s ? JSON.parse(stripped.slice(s, e + 1)) : null;
+        }
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("LLM returned non-JSON");
+        }
+        const obj = parsed as Record<string, unknown>;
+        const ct = (obj.currentTopic ?? {}) as Record<string, unknown>;
+        const update: IncrementalMinutesUpdate = {
+          topicChanged: Boolean(obj.topicChanged),
+          currentTopic: {
+            title: typeof ct.title === "string" ? ct.title : "",
+            newPoints: Array.isArray(ct.newPoints)
+              ? (ct.newPoints as unknown[]).filter(
+                  (p): p is string => typeof p === "string"
+                )
+              : [],
+            timeStartMs:
+              typeof ct.timeStartMs === "number" ? ct.timeStartMs : undefined,
+            timeEndMs:
+              typeof ct.timeEndMs === "number" ? ct.timeEndMs : undefined,
+          },
+        };
+        send({ type: "incremental_update", update });
+      } catch (err) {
+        send({
+          type: "error",
+          message: err instanceof Error ? err.message : "Incremental failed",
+        });
+      } finally {
         controller.close();
       }
     },

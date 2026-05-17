@@ -243,9 +243,21 @@ export function Recorder({
 
   const [stopConfirmOpen, setStopConfirmOpen] = React.useState(false);
 
-  const [minutesSections, setMinutesSections] = React.useState<MinutesSection[]>([]);
+  // Two-tier minutes state (mirrors lecsync):
+  //   - confirmedSections: locked-in chapters, won't change anymore
+  //   - pendingSection: current chapter, may grow with new bullets
+  //   - minutesSections (derived): the flat array passed to <MinutesView>
+  const [confirmedSections, setConfirmedSections] = React.useState<MinutesSection[]>([]);
+  const [pendingSection, setPendingSection] = React.useState<MinutesSection | null>(null);
+  const minutesSections = React.useMemo<MinutesSection[]>(
+    () => (pendingSection ? [...confirmedSections, pendingSection] : confirmedSections),
+    [confirmedSections, pendingSection]
+  );
   const [minutesStatus, setMinutesStatus] = React.useState<"idle" | "streaming" | "error">("idle");
   const minutesAbortRef = React.useRef<AbortController | null>(null);
+  // Tracks which utterance ids have already been sent in a minutes delta —
+  // we recompute "newTranscripts" by filtering against this set.
+  const minutesSentIdsRef = React.useRef<Set<string>>(new Set());
   // Bookkeeping for the auto-refresh effect — see the effect below.
   const lastMinutesRefreshAtRef = React.useRef<number>(0);
   const lastMinutesFinalCountRef = React.useRef<number>(0);
@@ -309,7 +321,8 @@ export function Recorder({
   const startRecording = React.useCallback(async () => {
     if (starting || state.status === "recording") return;
     setStarting(true);
-    setMinutesSections([]);
+    setConfirmedSections([]);
+    setPendingSection(null);
     setMinutesStatus("idle");
     try {
       const title = defaultTitle ?? new Date().toLocaleString();
@@ -390,6 +403,37 @@ export function Recorder({
     async (opts?: { silent?: boolean }) => {
       if (!sessionId || minutesStatus === "streaming") return;
       const silent = opts?.silent === true;
+
+      // Compute the delta — finalized utterances not yet sent in any prior
+      // minutes call.
+      const sent = minutesSentIdsRef.current;
+      const newTranscripts: Array<{
+        segmentId: string;
+        text: string;
+        timestamp: number;
+      }> = [];
+      const justSentIds: string[] = [];
+      const startedAt = state.startedAt ?? Date.now();
+      for (const id of state.order) {
+        const u = state.byId[id];
+        if (!u?.isFinal) continue;
+        if (sent.has(u.id)) continue;
+        const text = u.sourceText.trim();
+        if (text.length < 3) {
+          // skip but mark as sent so we don't reconsider it later
+          justSentIds.push(u.id);
+          continue;
+        }
+        newTranscripts.push({
+          segmentId: u.id,
+          text,
+          timestamp: Math.max(0, u.startMs),
+        });
+        justSentIds.push(u.id);
+      }
+      // No new content → don't burn a call.
+      if (newTranscripts.length === 0) return;
+
       minutesAbortRef.current?.abort();
       const ctrl = new AbortController();
       minutesAbortRef.current = ctrl;
@@ -399,7 +443,25 @@ export function Recorder({
         const resp = await fetch(`/api/sessions/${sessionId}/minutes/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ language: targetLang }),
+          body: JSON.stringify({
+            mode: "incremental",
+            confirmedSections: confirmedSections.map((s) => ({
+              title: s.title,
+              points: s.points,
+              timeStartMs: s.timeStartMs,
+              timeEndMs: s.timeEndMs,
+            })),
+            pendingSection: pendingSection
+              ? {
+                  title: pendingSection.title,
+                  points: pendingSection.points,
+                  timeStartMs: pendingSection.timeStartMs,
+                  timeEndMs: pendingSection.timeEndMs,
+                }
+              : null,
+            newTranscripts,
+            language: targetLang,
+          }),
           signal: ctrl.signal,
         });
         if (!resp.ok || !resp.body) {
@@ -408,7 +470,7 @@ export function Recorder({
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
-        const collected: MinutesSection[] = [];
+        let appliedUpdate = false;
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -424,13 +486,48 @@ export function Recorder({
             } catch {
               continue;
             }
-            if (payload.type === "section_confirmed" || payload.type === "section_pending") {
-              collected.push(payload.section);
-              setMinutesSections([...collected]);
+            if (payload.type === "incremental_update") {
+              const { topicChanged, currentTopic } = payload.update;
+              // Mark the delta as consumed only AFTER a successful update so
+              // a network error doesn't drop transcripts.
+              for (const id of justSentIds) sent.add(id);
+
+              if (topicChanged && pendingSection) {
+                // Lock the prior pending section into confirmed, start fresh.
+                setConfirmedSections((prev) => [...prev, pendingSection]);
+                setPendingSection({
+                  title: currentTopic.title || "新话题",
+                  points: currentTopic.newPoints,
+                  timeStartMs: currentTopic.timeStartMs,
+                  timeEndMs: currentTopic.timeEndMs,
+                });
+              } else if (pendingSection) {
+                // Append new points to the existing pending section.
+                setPendingSection({
+                  title: currentTopic.title || pendingSection.title,
+                  points: [...pendingSection.points, ...currentTopic.newPoints],
+                  timeStartMs: pendingSection.timeStartMs ?? currentTopic.timeStartMs,
+                  timeEndMs: currentTopic.timeEndMs ?? pendingSection.timeEndMs,
+                });
+              } else {
+                // First refresh of the session — open a pending section.
+                setPendingSection({
+                  title: currentTopic.title || "话题 1",
+                  points: currentTopic.newPoints,
+                  timeStartMs: currentTopic.timeStartMs ?? Math.max(0, Date.now() - startedAt),
+                  timeEndMs: currentTopic.timeEndMs,
+                });
+              }
+              appliedUpdate = true;
             } else if (payload.type === "error") {
               throw new Error(payload.message);
             }
           }
+        }
+        if (!appliedUpdate) {
+          // Server returned no update at all — treat delta as consumed
+          // (probably all-filler content the model skipped).
+          for (const id of justSentIds) sent.add(id);
         }
         setMinutesStatus("idle");
       } catch (err) {
@@ -443,7 +540,16 @@ export function Recorder({
         }
       }
     },
-    [sessionId, targetLang, minutesStatus]
+    [
+      sessionId,
+      targetLang,
+      minutesStatus,
+      state.byId,
+      state.order,
+      state.startedAt,
+      confirmedSections,
+      pendingSection,
+    ]
   );
 
   // Auto-refresh "实时纪要" while recording. Matched to lecsync's actual
@@ -482,12 +588,16 @@ export function Recorder({
   }, [state.status, state.byId, state.order, sessionId, minutesStatus, refreshLiveMinutes]);
 
   // Reset auto-refresh bookkeeping each time recording (re)starts so a new
-  // session doesn't inherit the previous session's accumulated counters.
+  // session doesn't inherit the previous session's accumulated counters
+  // or pending section.
   React.useEffect(() => {
     if (state.status === "recording" && state.startedAt != null) {
       lastMinutesRefreshAtRef.current = 0;
       lastMinutesFinalCountRef.current = 0;
       lastMinutesCharsRef.current = 0;
+      minutesSentIdsRef.current = new Set();
+      setConfirmedSections([]);
+      setPendingSection(null);
     }
   }, [state.status, state.startedAt]);
 
@@ -740,7 +850,7 @@ export function Recorder({
               录够几句话后会自动生成要点 · 也可点「立即刷新」手动触发
             </p>
           ) : (
-            <MinutesView sections={minutesSections} />
+            <MinutesView sections={minutesSections} pendingLastSection={pendingSection !== null} />
           )}
         </CardContent>
       </Card>

@@ -12,6 +12,12 @@ export interface MinutesViewProps {
   contentMd?: string | null;
   loading?: boolean;
   className?: string;
+  /**
+   * If set, the LAST section is rendered as "pending" (dashed border, "进行中"
+   * badge). Used during live recording to distinguish chapters that are still
+   * being written from chapters the LLM has confirmed.
+   */
+  pendingLastSection?: boolean;
 }
 
 function formatRange(startMs?: number, endMs?: number): string | null {
@@ -35,6 +41,7 @@ export function MinutesView({
   contentMd,
   loading,
   className,
+  pendingLastSection,
 }: MinutesViewProps) {
   if (loading) {
     return (
@@ -50,15 +57,30 @@ export function MinutesView({
   }
 
   if (sections && sections.length > 0) {
+    const lastIdx = sections.length - 1;
     return (
       <div className={cn("flex flex-col gap-3", className)}>
         {sections.map((section, idx) => {
           const range = formatRange(section.timeStartMs, section.timeEndMs);
+          const isPending = pendingLastSection === true && idx === lastIdx;
           return (
-            <Card key={`${section.title}-${idx}`}>
+            <Card
+              key={`${section.title}-${idx}`}
+              className={cn(
+                isPending &&
+                  "border-dashed border-zinc-300 bg-zinc-50/40 dark:border-zinc-700 dark:bg-zinc-900/40"
+              )}
+            >
               <CardHeader>
                 <CardTitle className="flex items-baseline justify-between gap-3">
-                  <span>{section.title}</span>
+                  <span className="flex items-center gap-2">
+                    {section.title}
+                    {isPending ? (
+                      <span className="rounded-full bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                        进行中
+                      </span>
+                    ) : null}
+                  </span>
                   {range ? (
                     <span className="font-mono text-xs font-normal tabular-nums text-zinc-500 dark:text-zinc-400">
                       {range}

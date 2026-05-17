@@ -1,4 +1,9 @@
-import type { LLMMessage, SegmentDTO } from "@/lib/contracts";
+import type {
+  IncrementalMinutesSection,
+  IncrementalTranscript,
+  LLMMessage,
+  SegmentDTO,
+} from "@/lib/contracts";
 
 export interface BuildMinutesPromptInput {
   segments: SegmentDTO[];
@@ -69,6 +74,85 @@ export function buildMinutesPrompt(input: BuildMinutesPromptInput): LLMMessage[]
 
   const body = truncateFromMiddle(serializeSegments(segments), MAX_USER_CHARS);
   const user = `Transcript segments (one per line):\n${body}\n\nOutput JSON only.`;
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+}
+
+/**
+ * Build an INCREMENTAL minutes prompt — adds new bullets to a pending
+ * section, decides whether the topic shifted. Mirrors lecsync's payload:
+ *
+ *   in: { confirmedSections, pendingSection?, newTranscripts }
+ *   out: { topicChanged: boolean,
+ *          currentTopic: { title, newPoints[], timeStartMs?, timeEndMs? } }
+ *
+ * The model sees:
+ *   - The titles of already-confirmed sections (read-only memory)
+ *   - The current pending section (title + existing points)
+ *   - Only the NEW transcripts since the last refresh
+ * and decides if those new transcripts continue the pending topic or open
+ * a new one.
+ */
+export interface BuildIncrementalMinutesPromptInput {
+  confirmedSections: IncrementalMinutesSection[];
+  pendingSection: IncrementalMinutesSection | null;
+  newTranscripts: IncrementalTranscript[];
+  sourceLang: string;
+  targetLang: string;
+}
+
+export function buildIncrementalMinutesPrompt(
+  input: BuildIncrementalMinutesPromptInput
+): LLMMessage[] {
+  const { confirmedSections, pendingSection, newTranscripts, sourceLang, targetLang } = input;
+
+  const system = [
+    "You incrementally build meeting minutes from a live transcript.",
+    `Transcript source language: ${sourceLang}. Write all minutes content in ${targetLang}.`,
+    "Output STRICT JSON only — no preamble, no markdown fences, no commentary.",
+    "Schema:",
+    '{ "topicChanged": boolean,',
+    '  "currentTopic": { "title": string, "newPoints": string[], "timeStartMs"?: number, "timeEndMs"?: number } }',
+    "Rules:",
+    "- You will receive: titles of confirmed sections (already locked), the pending section (current topic, may be null), and the NEW transcripts since the last update.",
+    "- Decide if the new transcripts CONTINUE the pending topic or START a new one.",
+    "  * If continuing: `topicChanged: false`, `currentTopic.title` = same as pending, `newPoints` lists ONLY the bullet points that should be ADDED (do not repeat existing points).",
+    "  * If starting a new one: `topicChanged: true`, pick a fresh concise noun-phrase title, `newPoints` covers the new content from scratch.",
+    "  * If pending is null (first update of the session): always `topicChanged: false`, treat the new transcripts as the first section.",
+    "- Each newPoint: 15–40 characters in the target language. Concrete, factual, no leading dashes.",
+    "- Skip filler/greetings (\"hello\", \"嗯\", \"okay\"). If the new transcripts contain only filler, return `newPoints: []`.",
+    "- Do not invent content not present in the transcript. Stay grounded.",
+    "- timeStartMs/timeEndMs are the bounds of the new transcripts you used; you may omit them.",
+  ].join("\n");
+
+  const confirmedTitles =
+    confirmedSections.length > 0
+      ? confirmedSections.map((s, i) => `[${i + 1}] ${s.title}`).join("\n")
+      : "(none)";
+  const pendingBlock = pendingSection
+    ? `Title: ${pendingSection.title}\nExisting points:\n${(pendingSection.points.length
+        ? pendingSection.points.map((p) => `- ${p}`).join("\n")
+        : "(none yet)")}`
+    : "(none — this is the first update of the session)";
+  const transcriptBlock = newTranscripts
+    .map((t) => `[${Math.floor(t.timestamp / 1000)}s] ${t.text}`)
+    .join("\n");
+
+  const user = [
+    "## Confirmed section titles (locked, do not modify):",
+    confirmedTitles,
+    "",
+    "## Pending section (current topic):",
+    pendingBlock,
+    "",
+    "## New transcripts since last update:",
+    transcriptBlock,
+    "",
+    "Output JSON only.",
+  ].join("\n");
 
   return [
     { role: "system", content: system },

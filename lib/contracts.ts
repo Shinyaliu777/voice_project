@@ -357,10 +357,56 @@ export interface GenerateMinutesBody {
   language?: string;
   styleHint?: string;
 }
+
+/**
+ * Incremental live-minutes update body. Mirrors lecsync's pattern: the client
+ * holds the running state (confirmed + pending) and pushes only newly
+ * finalized transcripts. The server returns whether the topic shifted plus
+ * any new bullet points to splice into the pending section.
+ *
+ * Old full-regeneration payload (just `{language, styleHint}`) is still
+ * accepted by the route for the "post-recording final minutes" use case.
+ */
+export interface IncrementalMinutesSection {
+  title: string;
+  points: string[];
+  /** ms since recording start, optional */
+  timeStartMs?: number;
+  timeEndMs?: number;
+}
+export interface IncrementalTranscript {
+  segmentId: string;
+  text: string;
+  /** ms since recording start */
+  timestamp: number;
+}
+export interface IncrementalMinutesBody {
+  /** Distinguishes incremental vs full-regeneration request shape. */
+  mode: "incremental";
+  confirmedSections: IncrementalMinutesSection[];
+  pendingSection?: IncrementalMinutesSection | null;
+  newTranscripts: IncrementalTranscript[];
+  language?: string;
+}
+
+/** Server-side response inside a single incremental stream event. */
+export interface IncrementalMinutesUpdate {
+  /** When true, the prior `pendingSection` should be moved into confirmed
+   *  and `currentTopic` becomes a new pending section. */
+  topicChanged: boolean;
+  currentTopic: {
+    title: string;
+    newPoints: string[];
+    timeStartMs?: number;
+    timeEndMs?: number;
+  };
+}
+
 export type MinutesStreamEvent =
   | { type: "section_pending"; section: MinutesSection }
   | { type: "section_confirmed"; section: MinutesSection }
   | { type: "minutes_final"; contentMd: string }
+  | { type: "incremental_update"; update: IncrementalMinutesUpdate }
   | { type: "error"; message: string };
 
 // ---- Bookmarks ----
