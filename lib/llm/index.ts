@@ -1,14 +1,17 @@
 import type { LLMProvider } from "@/lib/contracts";
 import { geminiProvider } from "./gemini";
 import { claudeProvider } from "./claude";
+import { deepseekProvider } from "./deepseek";
 
-export type LLMProviderName = "gemini" | "claude";
+export type LLMProviderName = "gemini" | "claude" | "deepseek";
 
 const cache = new Map<LLMProviderName, LLMProvider>();
 
 function resolveDefault(): LLMProviderName {
   const raw = (process.env.LLM_DEFAULT_PROVIDER ?? "gemini").trim().toLowerCase();
-  return raw === "claude" ? "claude" : "gemini";
+  if (raw === "claude") return "claude";
+  if (raw === "deepseek") return "deepseek";
+  return "gemini";
 }
 
 /**
@@ -19,9 +22,14 @@ export function getLLMProvider(name?: LLMProviderName): LLMProvider {
   const key: LLMProviderName = name ?? resolveDefault();
   const cached = cache.get(key);
   if (cached) return cached;
-  const impl = key === "claude" ? claudeProvider : geminiProvider;
+  const impl =
+    key === "claude"
+      ? claudeProvider
+      : key === "deepseek"
+        ? deepseekProvider
+        : geminiProvider;
   cache.set(key, impl);
   return impl;
 }
 
-export { geminiProvider, claudeProvider };
+export { geminiProvider, claudeProvider, deepseekProvider };
