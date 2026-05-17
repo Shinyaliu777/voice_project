@@ -242,7 +242,17 @@ export function Recorder({
       dispatch({ type: "utterance", value: event.utterance });
     }
     if (event.error) {
-      toast.error(event.error.message || "Recorder error");
+      // Some "errors" are actually recovery-success info events — route those
+      // to a green toast so the user understands recording is fine again.
+      const code = event.error.code;
+      const msg = event.error.message || "Recorder error";
+      if (code === "device_recovered" || code === "ws_recovered") {
+        toast.success(msg);
+      } else if (code === "device_disconnected") {
+        toast.warning(msg);
+      } else {
+        toast.error(msg);
+      }
     }
   }, []);
 
