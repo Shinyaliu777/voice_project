@@ -82,6 +82,9 @@ export class Recorder {
   /** Utterances finalized by <end>, queued for batched POST to /segments. */
   private finalizeQueue: UtteranceBuilder[] = [];
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Maps DB segment id → the in-app utterance id we emitted, so we can fan
+   *  a translation PATCH back out as an `utterance` event the UI picks up. */
+  private segmentToUtterance: Map<string, string> = new Map();
 
   // ---- chunk upload pipeline ----
   private mediaRecorder: MediaRecorder | null = null;
@@ -860,12 +863,15 @@ export class Recorder {
     const utterances = this.finalizeQueue.splice(0, this.finalizeQueue.length);
 
     const segments: CreateSegmentBody[] = [];
+    const indexToUtteranceId = new Map<number, string>();
     for (const u of utterances) {
       const sourceText = u.sourceFinal.trim();
       const translatedText = u.transFinal.trim();
       if (!sourceText && !translatedText) continue;
+      const idx = this.segmentIndex++;
+      indexToUtteranceId.set(idx, u.id);
       segments.push({
-        segmentIndex: this.segmentIndex++,
+        segmentIndex: idx,
         audioStartMs: u.startMs,
         audioEndMs: u.endMs,
         speakerId: u.speakerId,
@@ -895,6 +901,8 @@ export class Recorder {
         | { segments: SegmentDTO[] };
       const segs = Array.isArray(body) ? body : body.segments ?? [];
       for (const seg of segs) {
+        const utteranceId = indexToUtteranceId.get(seg.segmentIndex);
+        if (utteranceId) this.segmentToUtterance.set(seg.id, utteranceId);
         this.onEvent({ segment: seg });
         this.pushLiveShare({ type: "segment", segment: seg });
         // Translation strategy:
@@ -1193,6 +1201,23 @@ export class Recorder {
       const updated = (await res.json()) as SegmentDTO;
       this.onEvent({ segment: updated });
       this.pushLiveShare({ type: "segment", segment: updated });
+      // Bridge the translation back to the live utterance card the UI is
+      // rendering. Without this the Card never re-renders with translated
+      // text because the UI listens for `utterance` events, not segment ones.
+      const utteranceId = this.segmentToUtterance.get(updated.id);
+      if (utteranceId) {
+        this.onEvent({
+          utterance: {
+            id: utteranceId,
+            speakerId: updated.speakerId ?? undefined,
+            startMs: updated.audioStartMs,
+            endMs: updated.audioEndMs,
+            sourceText: updated.sourceText,
+            translatedText: updated.translatedText ?? "",
+            isFinal: true,
+          },
+        });
+      }
     } catch (err) {
       this.emitError(err, "segment_patch_failed", true);
     }

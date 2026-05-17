@@ -862,12 +862,17 @@ function Segment({
   const hasTranslation = showTranslation && !!utterance.translatedText;
   const stamp = formatElapsed(utterance.startMs);
 
-  const sourceClass =
-    displayMode === "source-emphasis"
-      ? "text-base md:text-lg font-medium text-zinc-900 dark:text-zinc-50"
-      : displayMode === "balanced"
-      ? "text-sm md:text-base text-zinc-700 dark:text-zinc-200"
-      : "text-sm text-zinc-500 dark:text-zinc-400";
+  // When translation hasn't arrived yet (or is intentionally off) the source
+  // becomes the only text, so always render it as primary — otherwise the
+  // card looks like a half-empty 灰字 line. Once translation lands, the
+  // displayMode preference takes over the relative emphasis.
+  const sourceClass = !hasTranslation
+    ? "text-base md:text-lg font-medium text-zinc-900 dark:text-zinc-50"
+    : displayMode === "source-emphasis"
+    ? "text-base md:text-lg font-medium text-zinc-900 dark:text-zinc-50"
+    : displayMode === "balanced"
+    ? "text-sm md:text-base text-zinc-700 dark:text-zinc-200"
+    : "text-sm text-zinc-500 dark:text-zinc-400";
   const translationClass =
     displayMode === "translation-emphasis"
       ? "text-base md:text-lg font-medium text-zinc-900 dark:text-zinc-50"
@@ -931,12 +936,16 @@ function LiveCard({
   const hasTranslation = showTranslation && !!translatedText;
   const isListening = !sourceText && recording;
 
-  const sourceClass =
-    displayMode === "source-emphasis"
-      ? "text-lg md:text-xl font-semibold text-zinc-900 dark:text-zinc-50"
-      : displayMode === "balanced"
-      ? "text-base md:text-lg text-zinc-800 dark:text-zinc-100"
-      : "text-sm md:text-base text-zinc-500 dark:text-zinc-400";
+  // Same idea as in UtteranceCard: when translation hasn't shown up yet,
+  // source becomes the primary readable text so the live block doesn't look
+  // like a faint header.
+  const sourceClass = !hasTranslation
+    ? "text-2xl md:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50"
+    : displayMode === "source-emphasis"
+    ? "text-lg md:text-xl font-semibold text-zinc-900 dark:text-zinc-50"
+    : displayMode === "balanced"
+    ? "text-base md:text-lg text-zinc-800 dark:text-zinc-100"
+    : "text-sm md:text-base text-zinc-500 dark:text-zinc-400";
   const translationClass =
     displayMode === "translation-emphasis"
       ? "text-2xl md:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50"
