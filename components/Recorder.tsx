@@ -3,6 +3,8 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowDownUp,
+  ArrowLeftRight,
   ArrowRight,
   Loader2,
   Mic,
@@ -12,6 +14,13 @@ import {
   Square,
   Upload,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +51,14 @@ import type {
 // ------------------------------------------------------------------
 // State
 // ------------------------------------------------------------------
+
+type DisplayMode = "balanced" | "source-emphasis" | "translation-emphasis";
+
+const DISPLAY_MODE_LABEL: Record<DisplayMode, string> = {
+  balanced: "平衡",
+  "source-emphasis": "原文优先",
+  "translation-emphasis": "译文优先",
+};
 
 interface LiveState {
   status: RecorderState;
@@ -150,6 +167,15 @@ export function Recorder({
   const [sourceLang, setSourceLang] = React.useState(defaultSourceLang);
   const [targetLang, setTargetLang] = React.useState(defaultTargetLang);
   const [translationMode, setTranslationMode] = React.useState<TranslationMode>("local");
+  const [displayMode, setDisplayMode] = React.useState<DisplayMode>("translation-emphasis");
+
+  const swapLanguages = React.useCallback(() => {
+    setSourceLang((prevSource) => {
+      const newSource = targetLang;
+      setTargetLang(prevSource);
+      return newSource;
+    });
+  }, [targetLang]);
   const [starting, setStarting] = React.useState(false);
   const [sessionId, setSessionId] = React.useState<string | null>(null);
 
@@ -370,7 +396,14 @@ export function Recorder({
             onChange={setSourceLang}
             ariaLabel="源语言"
           />
-          <ArrowRight className="h-4 w-4 text-zinc-400" />
+          <button
+            type="button"
+            onClick={swapLanguages}
+            aria-label="对调源语言与目标语言"
+            className="rounded-full p-1 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+          >
+            <ArrowLeftRight className="h-4 w-4" />
+          </button>
           <LanguagePicker
             value={targetLang}
             onChange={setTargetLang}
@@ -425,7 +458,34 @@ export function Recorder({
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline">→ {targetLang.toUpperCase()}</Badge>
+          <button
+            type="button"
+            onClick={swapLanguages}
+            aria-label="对调显示方向"
+            className="inline-flex items-center gap-1 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          >
+            <span className="font-mono">{sourceLang.toUpperCase()}</span>
+            <ArrowLeftRight className="h-3 w-3" />
+            <span className="font-mono">{targetLang.toUpperCase()}</span>
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <ArrowDownUp className="h-4 w-4" />
+                <span>{DISPLAY_MODE_LABEL[displayMode]}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup
+                value={displayMode}
+                onValueChange={(v) => setDisplayMode(v as DisplayMode)}
+              >
+                <DropdownMenuRadioItem value="balanced">平衡</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="source-emphasis">原文优先</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="translation-emphasis">译文优先</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {sessionId && (
             <BookmarkInRecording
               sessionId={sessionId}
@@ -471,6 +531,7 @@ export function Recorder({
         order={state.order}
         byId={state.byId}
         showTranslation={showTranslation}
+        displayMode={displayMode}
       />
 
       {/* Live minutes panel */}
@@ -545,9 +606,15 @@ interface UtteranceListProps {
   order: string[];
   byId: Record<string, Utterance>;
   showTranslation: boolean;
+  displayMode: DisplayMode;
 }
 
-function UtteranceList({ order, byId, showTranslation }: UtteranceListProps) {
+function UtteranceList({
+  order,
+  byId,
+  showTranslation,
+  displayMode,
+}: UtteranceListProps) {
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
   // Auto-scroll to bottom on new utterance.
   React.useEffect(() => {
@@ -591,6 +658,7 @@ function UtteranceList({ order, byId, showTranslation }: UtteranceListProps) {
             utterance={u}
             isLive={isLive}
             showTranslation={showTranslation}
+            displayMode={displayMode}
           />
         );
       })}
@@ -602,13 +670,30 @@ function UtteranceCard({
   utterance,
   isLive,
   showTranslation,
+  displayMode,
 }: {
   utterance: Utterance;
   isLive: boolean;
   showTranslation: boolean;
+  displayMode: DisplayMode;
 }) {
   const stamp = formatElapsed(utterance.startMs);
   const hasTranslation = showTranslation && !!utterance.translatedText;
+
+  // Per-mode style for source vs translation lines.
+  const sourceClass =
+    displayMode === "source-emphasis"
+      ? "text-[17px] leading-snug text-zinc-900 dark:text-zinc-50"
+      : displayMode === "balanced"
+      ? "text-base leading-snug text-zinc-700 dark:text-zinc-200"
+      : "text-sm leading-snug text-zinc-500 dark:text-zinc-400";
+  const translationClass =
+    displayMode === "translation-emphasis"
+      ? "text-[17px] leading-snug text-zinc-900 dark:text-zinc-50"
+      : displayMode === "balanced"
+      ? "text-base leading-snug text-zinc-700 dark:text-zinc-200"
+      : "text-sm leading-snug text-zinc-500 dark:text-zinc-400";
+
   return (
     <div
       className={cn(
@@ -635,18 +720,17 @@ function UtteranceCard({
           </Badge>
         )}
       </div>
-      {/* Source on top — secondary (muted, smaller) */}
       {utterance.sourceText ? (
-        <p className="text-sm leading-snug text-zinc-500 dark:text-zinc-400">
+        <p className={cn(sourceClass, isLive && displayMode === "source-emphasis" && "font-medium")}>
           {utterance.sourceText}
         </p>
       ) : null}
-      {/* Translation on bottom — primary (dark, larger) */}
       {hasTranslation ? (
         <p
           className={cn(
-            "mt-1 text-[17px] leading-snug text-zinc-900 dark:text-zinc-50",
-            isLive && "font-medium"
+            "mt-1",
+            translationClass,
+            isLive && displayMode === "translation-emphasis" && "font-medium"
           )}
         >
           {utterance.translatedText}
