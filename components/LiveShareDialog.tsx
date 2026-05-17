@@ -63,17 +63,26 @@ export function LiveShareDialog({
 
   const [state, setState] = React.useState<LiveShareState>(initialState);
 
-  // Auto-mint on open (only once per open).
+  // Stable ref to the callback so the effect doesn't re-run (and cancel its
+  // own in-flight fetch) just because the parent re-rendered without
+  // memoizing the prop.
+  const onTokenMintedRef = React.useRef(onTokenMinted);
+  React.useEffect(() => {
+    onTokenMintedRef.current = onTokenMinted;
+  }, [onTokenMinted]);
+
+  // Auto-mint on open. We dedupe via a ref instead of via state-in-deps so
+  // a parent re-render mid-fetch can't tear down the request.
   const mintedForOpenRef = React.useRef(false);
   React.useEffect(() => {
     if (!open) {
       mintedForOpenRef.current = false;
+      setState(initialState);
       return;
     }
-    if (mintedForOpenRef.current || state.viewerUrl || state.loading) return;
+    if (mintedForOpenRef.current) return;
     mintedForOpenRef.current = true;
 
-    let cancelled = false;
     (async () => {
       setState({ ...initialState, loading: true });
       try {
@@ -86,24 +95,19 @@ export function LiveShareDialog({
           throw new Error(`mint failed (${resp.status})`);
         }
         const data = (await resp.json()) as { token: string; url: string };
-        if (cancelled) return;
         setState({
           loading: false,
           token: data.token,
           viewerUrl: data.url,
           error: null,
         });
-        onTokenMinted?.({ token: data.token, url: data.url });
+        onTokenMintedRef.current?.({ token: data.token, url: data.url });
       } catch (err) {
-        if (cancelled) return;
         const message = err instanceof Error ? err.message : "无法生成分享链接";
         setState({ loading: false, token: null, viewerUrl: null, error: message });
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, sessionId, state.viewerUrl, state.loading, onTokenMinted]);
+  }, [open, sessionId]);
 
   const copy = async () => {
     if (!state.viewerUrl) return;
