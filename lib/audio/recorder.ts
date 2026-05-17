@@ -618,13 +618,26 @@ export class Recorder {
     }
 
     // Debug: set `window.__debugSoniox = true` in the browser console before
-    // recording to dump every Soniox frame. Helpful for diagnosing why
-    // translation tokens aren't appearing.
+    // recording to dump every Soniox frame token-by-token. Designed so each
+    // line is a flat object you can read without expanding anything.
     if (
       typeof window !== "undefined" &&
       (window as unknown as { __debugSoniox?: boolean }).__debugSoniox
     ) {
-      console.log("[Soniox frame]", frame);
+      if (frame.error_code) {
+        console.warn("[Soniox] error", frame.error_code, frame.error_message);
+      } else if (frame.tokens && frame.tokens.length > 0) {
+        for (const t of frame.tokens) {
+          console.log("[Soniox tok]", {
+            text: JSON.stringify(t.text),
+            is_final: t.is_final,
+            lang: t.language,
+            spk: t.speaker,
+            trans: t.translation_status,
+            ms: `${t.start_ms ?? "?"}→${t.end_ms ?? "?"}`,
+          });
+        }
+      }
     }
 
     if (frame.error_code) {
@@ -908,8 +921,14 @@ export class Recorder {
       }
       const body = (await res.json()) as
         | SegmentDTO[]
-        | { segments: SegmentDTO[] };
-      const segs = Array.isArray(body) ? body : body.segments ?? [];
+        | { segments?: SegmentDTO[]; items?: SegmentDTO[] };
+      // Server route may return SegmentDTO[], {segments:[]}, or {items:[]}.
+      // The current route hands back {items:[]} (PaginatedResponse shape),
+      // so without this fallback the for-loop below sees an empty array and
+      // translateLocal never runs — that's why translated text never showed.
+      const segs = Array.isArray(body)
+        ? body
+        : body.segments ?? body.items ?? [];
       for (const seg of segs) {
         const utteranceId = indexToUtteranceId.get(seg.segmentIndex);
         if (utteranceId) this.segmentToUtterance.set(seg.id, utteranceId);
