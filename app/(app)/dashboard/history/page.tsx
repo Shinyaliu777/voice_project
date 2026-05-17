@@ -2,44 +2,21 @@ import Link from "next/link";
 import { Folder as FolderIcon, Inbox } from "lucide-react";
 import { FolderCardMenu } from "@/components/FolderCardMenu";
 import { AppHeader } from "@/components/AppHeader";
+import { SessionHistoryGrouped } from "@/components/SessionHistoryGrouped";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
+import { toSessionDTO } from "@/lib/api/dto";
 
-function formatRelative(date: Date): string {
-  const diffMs = Date.now() - date.getTime();
-  const sec = Math.max(1, Math.floor(diffMs / 1000));
-  if (sec < 60) return `${sec} 秒前`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} 分钟前`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day} 天前`;
-  const month = Math.floor(day / 30);
-  if (month < 12) return `${month} 个月前`;
-  const year = Math.floor(month / 12);
-  return `${year} 年前`;
+interface HistoryPageProps {
+  searchParams: Promise<{ q?: string }>;
 }
 
-function statusLabel(status: string): { label: string; tone: string } {
-  switch (status) {
-    case "ready":
-      return { label: "已完成", tone: "bg-emerald-50 text-emerald-700" };
-    case "recording":
-      return { label: "录音中", tone: "bg-rose-50 text-rose-700" };
-    case "uploading":
-      return { label: "上传中", tone: "bg-amber-50 text-amber-700" };
-    case "error":
-      return { label: "出错", tone: "bg-red-50 text-red-700" };
-    default:
-      return { label: "草稿", tone: "bg-zinc-100 text-zinc-700" };
-  }
-}
-
-export default async function HistoryPage() {
+export default async function HistoryPage({ searchParams }: HistoryPageProps) {
+  const { q: rawQ } = await searchParams;
+  const query = (rawQ ?? "").trim();
   const userId = await getDevUserId();
 
-  const [folders, unfiledCount, sessions] = await Promise.all([
+  const [folders, unfiledCount, sessionRows] = await Promise.all([
     prisma.folder.findMany({
       where: { userId },
       orderBy: { updatedAt: "desc" },
@@ -48,13 +25,27 @@ export default async function HistoryPage() {
       },
     }),
     prisma.session.count({ where: { userId, folderId: null } }),
+    // Fetch enough sessions to make the grouped view meaningful. The list is
+    // bucketed/grouped client-side so a generous limit is fine here — Prisma
+    // streams results lazily and 200 sessions is still a very small payload.
     prisma.session.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
-      take: 10,
-      include: { _count: { select: { segments: true } } },
+      take: 200,
+      include: {
+        _count: { select: { segments: true } },
+        minutes: { select: { id: true } },
+      },
     }),
   ]);
+
+  const sessions = sessionRows.map((row) =>
+    toSessionDTO(row, {
+      segmentCount: row._count.segments,
+      hasMinutes: !!row.minutes,
+      audioUrl: row.audioPath ? `/api/audio/file/${row.audioPath}` : null,
+    })
+  );
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -120,53 +111,9 @@ export default async function HistoryPage() {
 
       <section>
         <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-500">
-          最近录音
+          所有录音
         </h2>
-        {sessions.length === 0 ? (
-          <div className="rounded-[10px] border border-dashed border-zinc-200 bg-white p-10 text-center text-sm text-zinc-500">
-            还没有录音 — 从仪表板开始你的第一次会议
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-[10px] border border-zinc-100 bg-white">
-            <ul className="divide-y divide-zinc-100">
-              {sessions.map((s) => {
-                const status = statusLabel(s.status);
-                return (
-                  <li key={s.id}>
-                    <Link
-                      href={`/dashboard/history/${s.id}`}
-                      className="flex items-center justify-between gap-4 px-4 py-3 transition hover:bg-zinc-50"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate font-medium text-zinc-900">
-                            {s.title || "未命名录音"}
-                          </span>
-                          <span
-                            className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${status.tone}`}
-                          >
-                            {status.label}
-                          </span>
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
-                          <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono">
-                            {s.sourceLang.toUpperCase()} →{" "}
-                            {s.targetLang.toUpperCase()}
-                          </span>
-                          <span>{s._count.segments} 段</span>
-                          <span>{formatRelative(s.createdAt)}</span>
-                        </div>
-                      </div>
-                      <span className="shrink-0 text-sm text-zinc-400">
-                        查看 →
-                      </span>
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
+        <SessionHistoryGrouped sessions={sessions} query={query} />
       </section>
     </div>
   );
