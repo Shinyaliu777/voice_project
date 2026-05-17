@@ -246,6 +246,9 @@ export function Recorder({
   const [minutesSections, setMinutesSections] = React.useState<MinutesSection[]>([]);
   const [minutesStatus, setMinutesStatus] = React.useState<"idle" | "streaming" | "error">("idle");
   const minutesAbortRef = React.useRef<AbortController | null>(null);
+  // Bookkeeping for the auto-refresh effect — see the effect below.
+  const lastMinutesRefreshAtRef = React.useRef<number>(0);
+  const lastMinutesFinalCountRef = React.useRef<number>(0);
 
   // Decide initial translation mode based on Chrome availability.
   React.useEffect(() => {
@@ -383,57 +386,109 @@ export function Recorder({
     }
   }, [sessionId, router]);
 
-  const refreshLiveMinutes = React.useCallback(async () => {
-    if (!sessionId || minutesStatus === "streaming") return;
-    minutesAbortRef.current?.abort();
-    const ctrl = new AbortController();
-    minutesAbortRef.current = ctrl;
-    setMinutesStatus("streaming");
+  const refreshLiveMinutes = React.useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!sessionId || minutesStatus === "streaming") return;
+      const silent = opts?.silent === true;
+      minutesAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      minutesAbortRef.current = ctrl;
+      setMinutesStatus("streaming");
 
-    try {
-      const resp = await fetch(`/api/sessions/${sessionId}/minutes/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: targetLang }),
-        signal: ctrl.signal,
-      });
-      if (!resp.ok || !resp.body) {
-        throw new Error(`Failed to stream minutes (${resp.status})`);
-      }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      const collected: MinutesSection[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const events = buf.split("\n\n");
-        buf = events.pop() ?? "";
-        for (const evt of events) {
-          const dataLine = evt.split("\n").find((l) => l.startsWith("data:"));
-          if (!dataLine) continue;
-          let payload: MinutesStreamEvent;
-          try {
-            payload = JSON.parse(dataLine.slice(5).trim());
-          } catch {
-            continue;
-          }
-          if (payload.type === "section_confirmed" || payload.type === "section_pending") {
-            collected.push(payload.section);
-            setMinutesSections([...collected]);
-          } else if (payload.type === "error") {
-            throw new Error(payload.message);
+      try {
+        const resp = await fetch(`/api/sessions/${sessionId}/minutes/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language: targetLang }),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok || !resp.body) {
+          throw new Error(`Failed to stream minutes (${resp.status})`);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        const collected: MinutesSection[] = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const events = buf.split("\n\n");
+          buf = events.pop() ?? "";
+          for (const evt of events) {
+            const dataLine = evt.split("\n").find((l) => l.startsWith("data:"));
+            if (!dataLine) continue;
+            let payload: MinutesStreamEvent;
+            try {
+              payload = JSON.parse(dataLine.slice(5).trim());
+            } catch {
+              continue;
+            }
+            if (payload.type === "section_confirmed" || payload.type === "section_pending") {
+              collected.push(payload.section);
+              setMinutesSections([...collected]);
+            } else if (payload.type === "error") {
+              throw new Error(payload.message);
+            }
           }
         }
+        setMinutesStatus("idle");
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        setMinutesStatus("error");
+        // Auto-refresh failures (LLM quota etc.) shouldn't spam toasts — the
+        // user didn't ask for this run. Manual clicks still get the toast.
+        if (!silent) {
+          toast.error(err instanceof Error ? err.message : "纪要生成失败");
+        }
       }
-      setMinutesStatus("idle");
-    } catch (err) {
-      if (ctrl.signal.aborted) return;
-      setMinutesStatus("error");
-      toast.error(err instanceof Error ? err.message : "纪要生成失败");
+    },
+    [sessionId, targetLang, minutesStatus]
+  );
+
+  // Auto-refresh "实时纪要" while recording. Triggers when EITHER:
+  //   - 5+ finalized utterances since the last refresh (covers fast talkers
+  //     who pile up content quickly), OR
+  //   - 45+ seconds elapsed AND at least 2 new finalized utterances (covers
+  //     slow talkers where we still want a periodic refresh)
+  // The first refresh fires once we have 4+ finalized utterances so the user
+  // sees something appear without waiting a full minute.
+  React.useEffect(() => {
+    if (state.status !== "recording") return;
+    if (minutesStatus === "streaming") return;
+    if (!sessionId) return;
+
+    let finalCount = 0;
+    for (const id of state.order) {
+      if (state.byId[id]?.isFinal) finalCount++;
     }
-  }, [sessionId, targetLang, minutesStatus]);
+    const delta = finalCount - lastMinutesFinalCountRef.current;
+    if (delta <= 0) return;
+
+    const now = Date.now();
+    const elapsed = now - lastMinutesRefreshAtRef.current;
+    const isFirstRun = lastMinutesRefreshAtRef.current === 0;
+
+    const trigger =
+      (isFirstRun && finalCount >= 4) ||
+      (!isFirstRun && delta >= 5) ||
+      (!isFirstRun && elapsed >= 45_000 && delta >= 2);
+
+    if (!trigger) return;
+
+    lastMinutesRefreshAtRef.current = now;
+    lastMinutesFinalCountRef.current = finalCount;
+    void refreshLiveMinutes({ silent: true });
+  }, [state.status, state.byId, state.order, sessionId, minutesStatus, refreshLiveMinutes]);
+
+  // Reset auto-refresh bookkeeping each time recording (re)starts so a new
+  // session doesn't inherit the previous session's "last refreshed at" timer.
+  React.useEffect(() => {
+    if (state.status === "recording" && state.startedAt != null) {
+      lastMinutesRefreshAtRef.current = 0;
+      lastMinutesFinalCountRef.current = 0;
+    }
+  }, [state.status, state.startedAt]);
 
   const elapsedMs =
     state.startedAt != null && nowTs > 0 ? Math.max(0, nowTs - state.startedAt) : 0;
@@ -667,7 +722,7 @@ export function Recorder({
           <Button
             variant="outline"
             size="sm"
-            onClick={refreshLiveMinutes}
+            onClick={() => refreshLiveMinutes()}
             disabled={!sessionId || minutesStatus === "streaming"}
           >
             {minutesStatus === "streaming" ? (
@@ -675,13 +730,13 @@ export function Recorder({
             ) : (
               <RefreshCw className="h-4 w-4" />
             )}
-            <span>刷新纪要</span>
+            <span>立即刷新</span>
           </Button>
         </CardHeader>
         <CardContent>
           {minutesSections.length === 0 ? (
             <p className="py-2 text-sm text-zinc-500">
-              录一段后点"刷新纪要"基于当前转录生成要点（消耗 LLM 配额）。
+              录够几句话后会自动生成要点 · 也可点「立即刷新」手动触发
             </p>
           ) : (
             <MinutesView sections={minutesSections} />
