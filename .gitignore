@@ -11,4 +11,4 @@ node_modules/
 .vercel
 prisma/migrations/dev.db*
 next-env.d.ts
-package
+package-lock.json
