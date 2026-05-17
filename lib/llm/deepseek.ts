@@ -4,7 +4,9 @@ import type {
   LLMProvider,
 } from "@/lib/contracts";
 
-const DEFAULT_MODEL = "deepseek-chat";
+// deepseek-v4-flash is the current cost-perf model (replaces the older
+// deepseek-chat alias). Use deepseek-v4-pro for reasoning-heavy tasks.
+const DEFAULT_MODEL = "deepseek-v4-flash";
 const ENDPOINT = "https://api.deepseek.com/chat/completions";
 
 function throwIfAborted(signal?: AbortSignal): void {
