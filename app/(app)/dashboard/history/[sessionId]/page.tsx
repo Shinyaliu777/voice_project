@@ -10,6 +10,7 @@ import { ShareDialog } from "@/components/ShareDialog";
 import { ExportMenu } from "@/components/ExportMenu";
 import { SessionActionsBar } from "@/components/SessionActionsBar";
 import { SessionFolderPicker } from "@/components/SessionFolderPicker";
+import { RecommendCardsDialog } from "@/components/RecommendCardsDialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
@@ -178,6 +179,7 @@ export default async function SessionDetailPage({
               <span>问问这段录音</span>
             </Link>
           </Button>
+          <RecommendCardsDialog sessionId={session.id} />
           <ShareDialog sessionId={session.id} title={session.title} />
           <ExportMenu sessionId={session.id} />
         </div>
