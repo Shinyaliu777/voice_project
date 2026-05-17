@@ -57,8 +57,26 @@ export async function POST(req: NextRequest) {
     data: { sessionId, token, userId },
   });
 
-  // Build the viewer URL from the request origin so it works behind a tunnel.
-  const origin = req.nextUrl.origin;
+  // Build the viewer URL. Behind a reverse proxy (nginx, Cloudflare, etc.)
+  // `req.nextUrl.origin` is the LOCAL origin (often http://localhost:3000),
+  // so we honor X-Forwarded-* headers first and a PUBLIC_BASE_URL env var as
+  // an explicit override.
+  const envBase = process.env.PUBLIC_BASE_URL?.replace(/\/$/, "");
+  const forwardedHost = req.headers.get("x-forwarded-host");
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const hostHeader = req.headers.get("host");
+  let origin: string;
+  if (envBase) {
+    origin = envBase;
+  } else if (forwardedHost) {
+    origin = `${forwardedProto ?? "https"}://${forwardedHost}`;
+  } else if (hostHeader && !hostHeader.startsWith("localhost")) {
+    // Direct request without a forwarding proxy but a non-localhost Host.
+    const proto = req.nextUrl.protocol.replace(":", "") || "https";
+    origin = `${proto}://${hostHeader}`;
+  } else {
+    origin = req.nextUrl.origin;
+  }
   const url = `${origin}/share/live/${token}`;
 
   return NextResponse.json({ token, url }, { status: 201 });

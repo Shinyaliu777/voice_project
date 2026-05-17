@@ -494,7 +494,10 @@ export class Recorder {
     const silentBytes = Math.floor((sampleRate * 200) / 1000) * 2;
     this.heartbeatTimer = setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.wsOpen) return;
-      if (this.state === "paused") return;
+      // KEEP sending silent PCM while paused — otherwise Soniox times out
+      // after ~5s with no audio and the close handler kicks in a reconnect
+      // that silently un-pauses us. The PCM is zero-filled so no transcription
+      // happens; we're just keeping the socket warm.
       const idleMs = performance.now() - this.lastAudioSendAt;
       if (idleMs < 3500) return;
       try {
@@ -600,7 +603,11 @@ export class Recorder {
         this.state !== "stopping" &&
         this.state !== "ended" &&
         this.state !== "idle" &&
-        this.state !== "error"
+        this.state !== "error" &&
+        // Defense-in-depth: even if a WS close slips past the heartbeat
+        // (e.g. network blip during pause), don't auto-resume — the user's
+        // pause intent has priority. Only reconnect on visible drops.
+        this.state !== "paused"
       ) {
         this.scheduleWsReconnect();
       }
