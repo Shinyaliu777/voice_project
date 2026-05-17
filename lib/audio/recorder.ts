@@ -131,10 +131,13 @@ export class Recorder {
   // ---- Chrome Translator cache ----
   // window.Translator.create() warms up an on-device model — caching the
   // instance across segments turns a 200-500ms-per-segment cold-start into a
-  // single one-off init at session start.
-  private chromeTranslator: { translate(text: string): Promise<string> } | null = null;
-  private chromeTranslatorKey: string | null = null;
-  private chromeTranslatorPromise: Promise<{ translate(text: string): Promise<string> } | null> | null = null;
+  // single one-off init. We cache BOTH directions (src→tgt and tgt→src) so
+  // bilingual conversations get translated the right way without reloading
+  // the model when the speaker switches language.
+  private chromeTranslators: Map<
+    string,
+    Promise<{ translate(text: string): Promise<string> } | null>
+  > = new Map();
 
   constructor(config: RecorderConfig, onEvent: (e: RecorderEvent) => void) {
     this.config = config;
@@ -164,7 +167,17 @@ export class Recorder {
         this.config.translationMode === "local" &&
         this.config.sourceLanguage !== this.config.targetLanguage
       ) {
-        void this.getOrCreateChromeTranslator();
+        // Prefetch both directions so the speaker can switch language
+        // mid-session without the first switch eating a 200-500ms model
+        // warmup.
+        void this.getOrCreateChromeTranslator(
+          this.config.sourceLanguage,
+          this.config.targetLanguage
+        );
+        void this.getOrCreateChromeTranslator(
+          this.config.targetLanguage,
+          this.config.sourceLanguage
+        );
       }
 
       this.startedAtMs = performance.now();
@@ -892,9 +905,8 @@ export class Recorder {
       if (!latest || latest === state.lastTranslated) return;
       state.inFlight = true;
       try {
-        const translator = await this.getOrCreateChromeTranslator();
-        if (!translator) return;
-        const translated = await translator.translate(latest);
+        const translated = await this.translateAutoDirection(latest);
+        if (translated == null) return;
         // Bail if u was finalized while we were translating.
         if (this.currentUtterances.get(speakerKey) !== u) return;
         state.lastTranslated = latest;
@@ -1269,11 +1281,8 @@ export class Recorder {
   private async translateLocal(seg: SegmentDTO): Promise<void> {
     if (!seg.sourceText) return;
     try {
-      const translator = await this.getOrCreateChromeTranslator();
-      if (!translator) {
-        // Chrome's Translator API isn't usable. Don't silently fail —
-        // surface a clear, recoverable error so the UI can prompt the user
-        // to switch to 云端 (Soniox two-way) instead.
+      const translatedText = await this.translateAutoDirection(seg.sourceText);
+      if (translatedText == null) {
         this.emitError(
           new Error(
             "本地翻译不可用：请切换到 云端 模式（用 Soniox 内置翻译），" +
@@ -1284,7 +1293,6 @@ export class Recorder {
         );
         return;
       }
-      const translatedText = await translator.translate(seg.sourceText);
       await this.patchSegmentTranslation(seg, translatedText);
     } catch (err) {
       this.emitError(err, "translator_local_failed", true);
@@ -1292,18 +1300,17 @@ export class Recorder {
   }
 
   /**
-   * Returns a cached Chrome Translator for the current source/target pair.
-   * Creating a Translator triggers an on-device model warmup; we want to do
-   * that exactly once per session, not once per segment.
+   * Cached Chrome Translator for an arbitrary (src → tgt) pair. The first
+   * call for a pair warms the on-device model (~200-500ms); subsequent
+   * lookups are instant.
    */
-  private getOrCreateChromeTranslator(): Promise<{ translate(text: string): Promise<string> } | null> {
-    const key = `${this.config.sourceLanguage}->${this.config.targetLanguage}`;
-    if (this.chromeTranslator && this.chromeTranslatorKey === key) {
-      return Promise.resolve(this.chromeTranslator);
-    }
-    if (this.chromeTranslatorPromise && this.chromeTranslatorKey === key) {
-      return this.chromeTranslatorPromise;
-    }
+  private getOrCreateChromeTranslator(
+    src: string,
+    tgt: string
+  ): Promise<{ translate(text: string): Promise<string> } | null> {
+    const key = `${src}->${tgt}`;
+    const cached = this.chromeTranslators.get(key);
+    if (cached) return cached;
     const T =
       typeof window === "undefined"
         ? undefined
@@ -1316,22 +1323,38 @@ export class Recorder {
       );
       return Promise.resolve(null);
     }
-    this.chromeTranslator = null;
-    this.chromeTranslatorKey = key;
-    this.chromeTranslatorPromise = T.create({
-      sourceLanguage: this.config.sourceLanguage,
-      targetLanguage: this.config.targetLanguage,
-    })
-      .then((tr) => {
-        this.chromeTranslator = tr;
-        return tr;
-      })
+    const p: Promise<{ translate(text: string): Promise<string> } | null> = T.create(
+      { sourceLanguage: src, targetLanguage: tgt }
+    )
+      .then((tr) => tr)
       .catch((err) => {
-        this.chromeTranslatorPromise = null;
+        this.chromeTranslators.delete(key);
         this.emitError(err, "translator_local_failed", true);
         return null;
       });
-    return this.chromeTranslatorPromise;
+    this.chromeTranslators.set(key, p);
+    return p;
+  }
+
+  /**
+   * Pick the right direction for a piece of source text and translate it.
+   * In two-way mode the speaker might switch between the configured source
+   * and target language sentence-by-sentence — we detect which side this
+   * utterance is on and translate to the other.
+   */
+  private async translateAutoDirection(text: string): Promise<string | null> {
+    if (!text) return null;
+    const src = this.config.sourceLanguage;
+    const tgt = this.config.targetLanguage;
+    const cjkChars = (text.match(/[一-鿿぀-ヿ가-힯]/g) || []).length;
+    const totalNonSpace = text.replace(/\s+/g, "").length;
+    const textIsCJK = totalNonSpace > 0 && cjkChars / totalNonSpace > 0.3;
+    const tgtIsCJK = /^(zh|ja|ko)/i.test(tgt);
+    const [from, to] = textIsCJK === tgtIsCJK ? [tgt, src] : [src, tgt];
+    if (from === to) return text;
+    const translator = await this.getOrCreateChromeTranslator(from, to);
+    if (!translator) return null;
+    return translator.translate(text);
   }
 
   private async translateCloud(seg: SegmentDTO): Promise<void> {
