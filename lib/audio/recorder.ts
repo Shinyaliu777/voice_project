@@ -91,6 +91,16 @@ export class Recorder {
   /** Queue of blobs awaiting upload; processed serially so we don't reorder. */
   private chunkUploadQueue: Promise<void> = Promise.resolve();
 
+  // ---- device disconnect / recovery ----
+  /** Bound listener attached to the audio track's "ended" event. */
+  private trackEndedListener: (() => void) | null = null;
+  /** Track currently being monitored — kept so we can detach cleanly. */
+  private monitoredTrack: MediaStreamTrack | null = null;
+  private deviceRecoveryAttempts = 0;
+  private deviceRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly DEVICE_RECOVERY_MAX_ATTEMPTS = 3;
+  private readonly DEVICE_RECOVERY_BACKOFF_MS = 2000;
+
   constructor(config: RecorderConfig, onEvent: (e: RecorderEvent) => void) {
     this.config = config;
     this.onEvent = onEvent;
@@ -203,6 +213,7 @@ export class Recorder {
 
   destroy(): void {
     // Synchronous best-effort teardown without further events.
+    this.detachDeviceMonitor();
     try {
       this.mediaRecorder?.stop();
     } catch { /* ignore */ }
@@ -261,6 +272,102 @@ export class Recorder {
           channelCount: 1,
         },
       });
+    }
+    this.attachDeviceMonitor();
+  }
+
+  /**
+   * Listen for the audio track's "ended" event so we notice when the user
+   * unplugs their mic / revokes permission / switches device mid-recording.
+   */
+  private attachDeviceMonitor(): void {
+    this.detachDeviceMonitor();
+    const track = this.stream?.getAudioTracks()[0];
+    if (!track) return;
+    const listener = () => {
+      // Reset the listener bookkeeping so re-acquisition can re-attach.
+      this.monitoredTrack = null;
+      this.trackEndedListener = null;
+      // Only react during an active session; ignore if we're shutting down.
+      if (this.state === "stopping" || this.state === "ended" || this.state === "idle") {
+        return;
+      }
+      this.emitError(new Error("麦克风已断开"), "device_disconnected", true);
+      this.setState("reconnecting");
+      this.deviceRecoveryAttempts = 0;
+      void this.attemptDeviceRecovery();
+    };
+    track.addEventListener("ended", listener);
+    this.monitoredTrack = track;
+    this.trackEndedListener = listener;
+  }
+
+  private detachDeviceMonitor(): void {
+    if (this.monitoredTrack && this.trackEndedListener) {
+      try { this.monitoredTrack.removeEventListener("ended", this.trackEndedListener); } catch {}
+    }
+    this.monitoredTrack = null;
+    this.trackEndedListener = null;
+    if (this.deviceRecoveryTimer) {
+      clearTimeout(this.deviceRecoveryTimer);
+      this.deviceRecoveryTimer = null;
+    }
+  }
+
+  /**
+   * Try to grab the mic again and splice the new MediaStream into the live
+   * audio graph without re-creating the AudioContext or WebSocket. On success
+   * the recorder is back to "recording" state in a couple seconds; on repeat
+   * failure we surface a terminal error.
+   */
+  private async attemptDeviceRecovery(): Promise<void> {
+    if (this.state === "stopping" || this.state === "ended" || this.state === "idle") {
+      return;
+    }
+    if (this.deviceRecoveryAttempts >= this.DEVICE_RECOVERY_MAX_ATTEMPTS) {
+      this.emitError(
+        new Error("麦克风恢复失败，请检查设备"),
+        "device_recovery_failed",
+        false
+      );
+      this.setState("error");
+      return;
+    }
+    this.deviceRecoveryAttempts += 1;
+
+    try {
+      const oldStream = this.stream;
+      this.stream = null;
+      // Re-run the same acquireStream() path so we honor audioSource etc.
+      await this.acquireStream(); // also re-attaches the device monitor on the new track
+      if (!this.stream) throw new Error("re-acquire returned no stream");
+
+      // Splice the new stream into the existing audio graph.
+      if (this.audioCtx && this.workletNode) {
+        try { this.sourceNode?.disconnect(); } catch {}
+        const newSource = this.audioCtx.createMediaStreamSource(this.stream);
+        this.sourceNode = newSource;
+        newSource.connect(this.workletNode);
+        if (this.analyserNode) newSource.connect(this.analyserNode);
+      }
+
+      // Release the dead stream's tracks (the ended one and any siblings).
+      if (oldStream) {
+        oldStream.getTracks().forEach((t) => {
+          try { t.stop(); } catch {}
+        });
+      }
+
+      this.deviceRecoveryAttempts = 0;
+      this.setState("recording");
+      // emitError with a "recovered" code so the UI can show an info toast.
+      this.emitError(new Error("麦克风已恢复"), "device_recovered", true);
+    } catch {
+      // Re-try after a short backoff.
+      this.deviceRecoveryTimer = setTimeout(
+        () => void this.attemptDeviceRecovery(),
+        this.DEVICE_RECOVERY_BACKOFF_MS
+      );
     }
   }
 
@@ -922,6 +1029,7 @@ export class Recorder {
   }
 
   private async shutdownInternal(): Promise<void> {
+    this.detachDeviceMonitor();
     if (this.finalizeTimer) {
       clearTimeout(this.finalizeTimer);
       this.finalizeTimer = null;
