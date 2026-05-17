@@ -1027,12 +1027,13 @@ export class Recorder {
         sizeBytes,
       }
     );
-    const { uploadUrl, publicUrl, method, headers, chunkId } = presign as {
+    const { uploadUrl, publicUrl, method, headers, storageKey } = presign as {
       uploadUrl: string;
       publicUrl: string;
       method: "PUT" | "POST";
       headers?: Record<string, string>;
       chunkId: string;
+      storageKey: string;
     };
 
     // 2. PUT (or POST) bytes
@@ -1042,7 +1043,9 @@ export class Recorder {
       body: blob,
     });
 
-    // 3. Record completion
+    // 3. Record completion — use the actual storage key so finalize can find
+    // the file. (The earlier code passed chunkId, a random UUID, which was
+    // never the real path — concat failed and the session ended up "error".)
     await this.fetchJsonWithRetry("/api/audio/chunk-record", {
       sessionId: this.config.sessionId,
       chunkIndex,
@@ -1050,7 +1053,7 @@ export class Recorder {
       sizeBytes,
       durationSeconds,
       publicUrl,
-      storageKey: chunkId,
+      storageKey,
     });
   }
 

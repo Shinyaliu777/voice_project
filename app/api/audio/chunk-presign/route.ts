@@ -79,6 +79,7 @@ export async function POST(req: NextRequest) {
   const resp: ChunkPresignResponse = {
     ...presign,
     chunkId,
+    storageKey: key,
   };
   return NextResponse.json(resp);
 }

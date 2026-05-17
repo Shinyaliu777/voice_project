@@ -313,6 +313,9 @@ export interface ChunkPresignBody {
 }
 export interface ChunkPresignResponse extends StoragePresignResponse {
   chunkId: string;
+  /** Actual storage key the bytes will land at — must be echoed back by the
+   *  client in `chunk-record.storageKey` so finalize can locate the file. */
+  storageKey: string;
 }
 export interface ChunkRecordBody {
   sessionId: string;
