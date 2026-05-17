@@ -24,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { InviteCodeCard } from "@/components/InviteCodeCard";
 import { UserMenuBadge } from "@/components/UserMenuBadge";
+import { SidebarChatHistory } from "@/components/SidebarChatHistory";
 
 export interface SidebarNavProps {
   userName?: string;
@@ -40,13 +41,21 @@ interface NavEntry {
   kind?: "link" | "button";
   /** Optional id for entries that should trigger custom actions */
   action?: "settings";
+  /** Marks the entry whose row is rendered via SidebarChatHistory. */
+  feature?: "chat-history";
 }
 
 const NAV_ENTRIES: NavEntry[] = [
   { href: "/dashboard", label: "首页", icon: Home, kind: "link" },
   { href: "/dashboard/history", label: "文件夹", icon: Folder, kind: "link" },
   { href: "/dashboard/vocabulary", label: "词汇本", icon: BookOpen, kind: "link" },
-  { href: "/dashboard/chat/new", label: "对话", icon: MessageSquare, kind: "link" },
+  {
+    href: "/dashboard/chat/new",
+    label: "对话",
+    icon: MessageSquare,
+    kind: "link",
+    feature: "chat-history",
+  },
   { href: "/dashboard/shared-with-me", label: "共享", icon: Share2, kind: "link" },
   { href: "/dashboard/polls", label: "投票", icon: Vote, kind: "link" },
   { label: "设置", icon: Settings, kind: "button", action: "settings" },
@@ -98,12 +107,28 @@ export function SidebarNav({
             const isLink = entry.kind !== "button" && entry.href;
             const active = isLink && entry.href ? isActive(pathname, entry.href) : false;
 
+            const baseRowClassName =
+              "flex items-center gap-3 rounded-[10px] px-3 py-2 text-sm transition-colors";
+            const activeClassName =
+              "bg-zinc-200/70 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100";
+            const inactiveClassName =
+              "text-zinc-700 hover:bg-zinc-200/40 dark:text-zinc-300 dark:hover:bg-zinc-800/60";
             const itemClassName = cn(
-              "flex items-center gap-3 rounded-[10px] px-3 py-2 text-sm transition-colors",
-              active
-                ? "bg-zinc-200/70 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                : "text-zinc-700 hover:bg-zinc-200/40 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
+              baseRowClassName,
+              active ? activeClassName : inactiveClassName
             );
+
+            if (entry.feature === "chat-history") {
+              return (
+                <li key={entry.label}>
+                  <SidebarChatHistory
+                    parentItemClassName={baseRowClassName}
+                    topItemActiveClassName={activeClassName}
+                    topItemInactiveClassName={inactiveClassName}
+                  />
+                </li>
+              );
+            }
 
             const onClickAction = entry.action === "settings"
               ? () => setSettingsOpen(true)
