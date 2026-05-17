@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DocumentManager } from "@/components/DocumentManager";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 
@@ -101,6 +102,8 @@ export default async function FolderPage({
           {sessions.length} 个录音
         </span>
       </header>
+
+      {!isUnfiled ? <DocumentManager folderId={folderId} /> : null}
 
       <div className="mb-6 flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" disabled>
