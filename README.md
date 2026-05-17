@@ -136,6 +136,154 @@ prisma/
 | `npm run db:seed` | Seed dev user + sample data |
 | `npm run db:reset` | Drop + recreate the database |
 
+## API reference
+
+All routes are Next.js App Router handlers under `app/api/`. Request/response shapes are typed in [`lib/contracts.ts`](lib/contracts.ts) — names like `CreateSessionBody`, `SegmentDTO` below refer to that file.
+
+### Auth
+
+There's no real auth in Phase 1 — every route resolves the dev user via `getDevUserId()` (`DEV_USER_EMAIL` in `.env`). Live-share viewer is intentionally public (token in URL).
+
+### Recording / transcription
+
+| Method | Path | Body / Query | Returns |
+| --- | --- | --- | --- |
+| `POST` | `/api/soniox-token` | `SonioxTokenBody` | `{ token, expiresAt }` — short-lived Soniox temporary key |
+| `GET` | `/api/transcription/sessions` | `ListSessionsQuery` | `PaginatedResponse<SessionDTO>` |
+| `POST` | `/api/transcription/sessions` | `CreateSessionBody` | `SessionDTO` |
+| `GET` | `/api/transcription/sessions/[id]` | — | `SessionDTO` |
+| `PATCH` | `/api/transcription/sessions/[id]` | `UpdateSessionBody` | `SessionDTO` |
+| `DELETE` | `/api/transcription/sessions/[id]` | — | `{ ok: true }` |
+| `GET` | `/api/transcription/sessions/[id]/segments` | — | `{ items: SegmentDTO[] }` |
+| `POST` | `/api/transcription/sessions/[id]/segments` | `BulkCreateSegmentsBody` | `{ items: SegmentDTO[] }` (upsert by `segmentIndex`) |
+| `PATCH` | `/api/transcription/segments/[id]` | `UpdateSegmentBody` | `SegmentDTO` |
+| `DELETE` | `/api/transcription/segments/[id]` | — | `{ ok: true }` |
+| `GET` | `/api/transcription/sessions/[id]/speakers` | — | `SpeakerNameDTO[]` |
+| `POST` | `/api/transcription/sessions/[id]/speakers` | `UpdateSpeakerNameBody` | `SpeakerNameDTO` |
+| `POST` | `/api/sessions/[id]/retranscribe` | — | Kicks off a re-run of ASR against the stored audio |
+| `GET` | `/api/sessions/[id]/export` | `?format=md|docx|srt|vtt` | File download |
+
+### Audio upload
+
+Chunked upload — `MediaRecorder` produces webm/opus blobs every 3 s; each is presigned and uploaded directly to storage, then finalized into a single concatenated file.
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `POST` | `/api/audio/chunk-presign` | `ChunkPresignBody` | `ChunkPresignResponse` (includes `storageKey`) |
+| `PUT` | `/api/audio/upload-chunk` | raw bytes | for local storage driver only — S3 PUTs go straight to the bucket |
+| `POST` | `/api/audio/chunk-record` | `ChunkRecordBody` | `{ ok: true }` — records the chunk in DB |
+| `POST` | `/api/audio/finalize` | `FinalizeAudioBody` | `FinalizeAudioResponse` — concatenates chunks into the final blob |
+| `GET` | `/api/audio/status` | `?sessionId=` | `AudioStatusResponse` |
+| `GET` | `/api/audio/file/[...path]` | — | Streams the audio bytes (for local storage driver) |
+
+### Translation
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `POST` | `/api/translate` | `TranslateBody` | `TranslateResp` — server-side fallback for cloud-mode translation |
+
+The `local` translation mode never hits this route — Chrome's on-device model runs entirely in the browser.
+
+### Live share
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `POST` | `/api/live-share` | `{ sessionId }` | `{ token, url }` — mints a public viewer token |
+| `GET` | `/api/live-share/[token]` | — | SSE stream (`joined`, `utterance`, `segment` events). Public; no auth. |
+| `POST` | `/api/live-share/[token]/push` | `{ type, ... }` | Host-only. Pushes utterance/segment updates to subscribers. |
+
+### Minutes (LLM-generated session summary)
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/sessions/[id]/minutes` | — | `MinutesDTO` or `null` |
+| `POST` | `/api/sessions/[id]/minutes/generate` | `GenerateMinutesBody` | `MinutesDTO` — one-shot generation |
+| `POST` | `/api/sessions/[id]/minutes/stream` | `GenerateMinutesBody` | SSE stream of `MinutesStreamEvent` — section-by-section as the LLM produces them |
+
+### Chat over transcript
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/chat/sessions` | — | `ChatSessionDTO[]` |
+| `POST` | `/api/chat/sessions` | `CreateChatSessionBody` | `ChatSessionDTO` |
+| `GET` | `/api/chat/sessions/[id]` | — | `ChatSessionDTO & { messages: ChatMessageDTO[] }` |
+| `PATCH` | `/api/chat/sessions/[id]` | `{ title }` | `ChatSessionDTO` |
+| `DELETE` | `/api/chat/sessions/[id]` | — | `{ ok: true }` |
+| `POST` | `/api/chat` | `ChatRequestBody` | Vercel AI SDK streaming response |
+| `POST` | `/api/chat/upload` | multipart | uploads an attachment for context |
+| `GET` | `/api/chat/quota` | — | `{ used, limit }` |
+
+### Folders + documents (vocab extraction)
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/folders` | — | `FolderDTO[]` |
+| `POST` | `/api/folders` | `CreateFolderBody` | `FolderDTO` |
+| `GET` | `/api/folders/[id]` | — | `FolderDTO` |
+| `PATCH` | `/api/folders/[id]` | `UpdateFolderBody` | `FolderDTO` |
+| `DELETE` | `/api/folders/[id]` | — | `{ ok: true }` |
+| `GET` | `/api/folders/[id]/documents` | — | `DocumentDTO[]` |
+| `POST` | `/api/folders/[id]/documents` | `DocumentPresignBody` | `DocumentPresignResponse` |
+| `POST` | `/api/folders/[id]/documents/confirm` | `DocumentConfirmBody` | `DocumentDTO` |
+| `DELETE` | `/api/folders/[id]/documents/[docId]` | — | `{ ok: true }` |
+| `POST` | `/api/folders/[id]/documents/[docId]/extract-terms` | — | `ExtractTermsResponse` — LLM term extraction |
+
+### Flashcards (SM-2 SRS)
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/flashcards` | — | `FlashcardDTO[]` |
+| `POST` | `/api/flashcards` | `CreateFlashcardBody` | `FlashcardDTO` |
+| `PATCH` | `/api/flashcards/[id]` | `{ front?, back? }` | `FlashcardDTO` |
+| `DELETE` | `/api/flashcards/[id]` | — | `{ ok: true }` |
+| `POST` | `/api/flashcards/[id]/review` | `FlashcardReviewBody` | `FlashcardDTO` (updated SM-2 fields) |
+| `GET` | `/api/flashcards/due` | — | Cards whose `nextReviewAt <= now` |
+| `POST` | `/api/flashcards/recommend` | `FlashcardRecommendBody` | `FlashcardRecommendResponse` — LLM suggests cards from a session |
+| `GET` | `/api/flashcards/source-sessions` | — | Sessions that have any flashcards derived from them |
+
+### Polls / live audience
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/polls` | — | Polls for the dev user |
+| `POST` | `/api/polls` | `{ sessionId, question, options[] }` | created poll |
+| `POST` | `/api/polls/[id]/vote` | `{ optionId }` | updated tallies |
+
+### Misc
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/api/sessions/[id]/bookmarks` | — | `BookmarkDTO[]` |
+| `POST` | `/api/sessions/[id]/bookmarks` | `CreateBookmarkBody` | `BookmarkDTO` |
+| `PATCH` | `/api/bookmarks/[id]` | `UpdateBookmarkBody` | `BookmarkDTO` |
+| `DELETE` | `/api/bookmarks/[id]` | — | `{ ok: true }` |
+| `GET` | `/api/search` | `?q=` | Cross-session full-text hits |
+| `POST` | `/api/lookup` | `{ word, context? }` | Inline dictionary lookup (LLM-backed) |
+| `GET` | `/api/user/settings` | — | `{ settings: {...} }` (JSON blob on User row) |
+| `PATCH` | `/api/user/settings` | partial settings | merged settings |
+| `GET` | `/api/invite/list` | — | The dev user's invite stats |
+
+### Backend libs (`lib/`)
+
+Most routes are thin adapters around domain modules:
+
+```
+lib/
+  asr/                  Soniox provider — token minting, model defaults
+  audio/                Recorder (browser) + worklet message protocol
+  translation/          Chrome local + cloud (Gemini / passthrough) translators
+  llm/                  Gemini + Anthropic adapters behind LLMProvider iface
+  storage/              local-filesystem + S3 implementations of StorageProvider
+  document-parser/      pdf-parse, mammoth, officeparser dispatch
+  export/               MD / DOCX / SRT / VTT serializers
+  live-share/           in-memory pub/sub broadcaster for SSE
+  prompts/              LLM prompt templates (minutes, terms, flashcards, chat)
+  api/dto.ts            Prisma row → DTO converters
+  db.ts                 PrismaClient singleton
+  dev-user.ts           Phase 1 fake-auth shim
+  contracts.ts          All TypeScript types shared by routes + browser code
+```
+
 ## Notes
 
 - The default LLM model IDs in `.env.example` point at Gemini Flash for cost — swap to Claude / a larger Gemini if you want better minutes / chat quality.
