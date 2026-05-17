@@ -73,6 +73,11 @@ export class Recorder {
   private wsOpen = false;
   /** PCM frames buffered until the WS is open. */
   private pcmQueue: ArrayBuffer[] = [];
+  /** performance.now() of the last binary frame we sent on the Soniox WS. */
+  private lastAudioSendAt = 0;
+  /** Periodic timer that keeps Soniox alive during silence — without it the
+   *  server 408s the stream after a few seconds of no input. */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---- utterance / segment bookkeeping ----
   private utteranceCounter = 0;
@@ -258,6 +263,7 @@ export class Recorder {
   destroy(): void {
     // Synchronous best-effort teardown without further events.
     this.intentionalShutdown = true;
+    this.stopHeartbeat();
     if (this.wsReconnectTimer) {
       clearTimeout(this.wsReconnectTimer);
       this.wsReconnectTimer = null;
@@ -458,6 +464,38 @@ export class Recorder {
   //   Soniox WebSocket
   // ==========================================================================
 
+  /**
+   * Periodically push a tiny chunk of silent PCM if the user has been quiet
+   * for a few seconds. Without this, Soniox closes the WebSocket with code
+   * 408 ("Request timeout") after a stretch of silence and the session
+   * appears to fail despite the user only pausing to think.
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    const sampleRate = this.config.sampleRate ?? DEFAULT_SAMPLE_RATE;
+    // 200 ms of zeroed Int16 mono samples.
+    const silentBytes = Math.floor((sampleRate * 200) / 1000) * 2;
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.wsOpen) return;
+      if (this.state === "paused") return;
+      const idleMs = performance.now() - this.lastAudioSendAt;
+      if (idleMs < 3500) return;
+      try {
+        this.ws.send(new ArrayBuffer(silentBytes));
+        this.lastAudioSendAt = performance.now();
+      } catch {
+        // Close handler will surface and trigger reconnect.
+      }
+    }, 1500);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   private async openSonioxWs(): Promise<void> {
     const ws = new WebSocket(SONIOX_WS_URL);
     ws.binaryType = "arraybuffer";
@@ -516,11 +554,13 @@ export class Recorder {
           return;
         }
         this.wsOpen = true;
+        this.lastAudioSendAt = performance.now();
         // Flush anything that was queued during connection.
         for (const buf of this.pcmQueue) {
           try { ws.send(buf); } catch { /* ignore */ }
         }
         this.pcmQueue = [];
+        this.startHeartbeat();
         resolve();
       };
       const onError = () => {
@@ -534,6 +574,7 @@ export class Recorder {
     ws.addEventListener("message", (event) => this.handleSonioxMessage(event));
     ws.addEventListener("close", () => {
       this.wsOpen = false;
+      this.stopHeartbeat();
       // Auto-reconnect if the close wasn't initiated by us and we're still
       // mid-session. Don't fire during normal stop()/destroy() or while
       // device-recovery is the failure path.
@@ -1054,6 +1095,7 @@ export class Recorder {
       if (this.wsOpen && this.ws) {
         try {
           this.ws.send(msg.buffer);
+          this.lastAudioSendAt = performance.now();
         } catch (err) {
           this.emitError(err, "ws_send_failed", true);
         }
@@ -1384,6 +1426,7 @@ export class Recorder {
 
   private async shutdownInternal(): Promise<void> {
     this.detachDeviceMonitor();
+    this.stopHeartbeat();
     if (this.finalizeTimer) {
       clearTimeout(this.finalizeTimer);
       this.finalizeTimer = null;
