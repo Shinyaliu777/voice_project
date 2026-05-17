@@ -466,7 +466,7 @@ export function Recorder({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
@@ -815,6 +815,14 @@ function UtteranceList({
   );
 }
 
+// Soft-wrap at sentence boundaries so multi-sentence utterances render with a
+// line break between each sentence, matching lecsync's per-sentence cadence
+// even before Soniox fires <end>. Keeps the terminator on the previous line.
+function breakAtSentences(text: string): string {
+  if (!text) return text;
+  return text.replace(/([.!?。！？])(\s*)(?=\S)/g, "$1\n");
+}
+
 function UtteranceCard({
   utterance,
   isLive,
@@ -828,6 +836,14 @@ function UtteranceCard({
 }) {
   const stamp = formatElapsed(utterance.startMs);
   const hasTranslation = showTranslation && !!utterance.translatedText;
+  const sourceDisplay = React.useMemo(
+    () => breakAtSentences(utterance.sourceText),
+    [utterance.sourceText]
+  );
+  const translatedDisplay = React.useMemo(
+    () => (utterance.translatedText ? breakAtSentences(utterance.translatedText) : ""),
+    [utterance.translatedText]
+  );
 
   // Per-mode style for source vs translation lines.
   const sourceClass =
@@ -872,23 +888,23 @@ function UtteranceCard({
       {utterance.sourceText ? (
         <p
           className={cn(
-            "min-w-0 break-words [overflow-wrap:anywhere]",
+            "min-w-0 whitespace-pre-line break-words [overflow-wrap:anywhere]",
             sourceClass,
             isLive && displayMode === "source-emphasis" && "font-medium"
           )}
         >
-          {utterance.sourceText}
+          {sourceDisplay}
         </p>
       ) : null}
       {hasTranslation ? (
         <p
           className={cn(
-            "mt-1 min-w-0 break-words [overflow-wrap:anywhere]",
+            "mt-1 min-w-0 whitespace-pre-line break-words [overflow-wrap:anywhere]",
             translationClass,
             isLive && displayMode === "translation-emphasis" && "font-medium"
           )}
         >
-          {utterance.translatedText}
+          {translatedDisplay}
         </p>
       ) : null}
     </div>
