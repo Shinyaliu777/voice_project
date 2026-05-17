@@ -10,6 +10,15 @@ const ChatRequestBodySchema = z.object({
   chatSessionId: z.string().min(1),
   message: z.string().min(1),
   model: z.string().optional(),
+  /**
+   * When true, treat this request as a "重新生成" of the most recent
+   * assistant reply. The route will:
+   *  - delete the most recent assistant message in this chat (so it can be
+   *    replaced by the new stream's output);
+   *  - skip creating a duplicate user message when `message` matches the
+   *    last persisted user message (avoids stacking identical turns).
+   */
+  regenerate: z.boolean().optional(),
 });
 
 const MAX_SNIPPET_CHARS = 8000;
@@ -107,31 +116,72 @@ export async function POST(req: Request) {
     }
   }
 
-  // Save user message immediately so it's visible even if the stream fails
-  await prisma.chatMessage.create({
-    data: {
-      chatSessionId: chatSession.id,
-      role: "user",
-      content: body.message,
-    },
-  });
+  // Regenerate flow: drop the last assistant message so the new stream
+  // replaces it in-place rather than appending another reply.
+  if (body.regenerate) {
+    const lastAssistant = await prisma.chatMessage.findFirst({
+      where: { chatSessionId: chatSession.id, role: "assistant" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    if (lastAssistant) {
+      await prisma.chatMessage.delete({ where: { id: lastAssistant.id } });
+    }
+  }
 
-  // Build messages: system + prior history + new user message
+  // Reload messages after potential deletion above so `history` reflects the
+  // current state of the chat.
+  const persistedMessages = body.regenerate
+    ? await prisma.chatMessage.findMany({
+        where: { chatSessionId: chatSession.id },
+        orderBy: { createdAt: "asc" },
+      })
+    : chatSession.messages;
+
+  // Save the user message — unless we're regenerating and the last persisted
+  // user message already has identical content (avoid stacking duplicates).
+  const lastPersisted = persistedMessages[persistedMessages.length - 1];
+  const userAlreadyPersisted =
+    body.regenerate &&
+    lastPersisted?.role === "user" &&
+    lastPersisted.content === body.message;
+
+  if (!userAlreadyPersisted) {
+    await prisma.chatMessage.create({
+      data: {
+        chatSessionId: chatSession.id,
+        role: "user",
+        content: body.message,
+      },
+    });
+  }
+
+  // Build messages: system + prior history + new user message.
+  //
+  // Important: only pass `recordingTitle` when a recording is actually bound.
+  // Falling back to `chatSession.title` here causes the assistant to think
+  // every conversation refers to a recording — the very bug we're fixing.
   const systemContent = buildChatSystemPrompt({
-    sessionTitle:
-      parentSession?.title ?? chatSession.title ?? "Untitled recording",
-    sourceLang: parentSession?.sourceLang ?? "en",
-    targetLang: parentSession?.targetLang ?? "en",
+    recordingTitle: parentSession?.title ?? null,
+    sourceLang: parentSession?.sourceLang,
+    targetLang: parentSession?.targetLang,
     transcriptSnippet,
   });
-  const history: LLMMessage[] = chatSession.messages.map((m) => ({
+  // For regenerate: `persistedMessages` already includes the user message we
+  // want to answer (we skipped the duplicate save above), so don't append
+  // another copy. For the normal path, append the freshly-saved user message.
+  const history: LLMMessage[] = (
+    userAlreadyPersisted ? persistedMessages : chatSession.messages
+  ).map((m) => ({
     role: m.role as LLMMessage["role"],
     content: m.content,
   }));
   const messages: LLMMessage[] = [
     { role: "system", content: systemContent },
     ...history,
-    { role: "user", content: body.message },
+    ...(userAlreadyPersisted
+      ? []
+      : [{ role: "user" as const, content: body.message }]),
   ];
 
   // Touch chat session so it bubbles up in the list (best-effort)

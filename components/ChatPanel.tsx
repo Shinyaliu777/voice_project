@@ -5,12 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ChevronRight,
+  Copy,
   Globe,
   Lightbulb,
   Loader2,
   MessageSquare,
   Mic,
   Plus,
+  RotateCcw,
   Send,
   Sparkles,
 } from "lucide-react";
@@ -18,6 +20,7 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { MarkdownMessage } from "@/components/MarkdownMessage";
 import {
   LANGUAGE_NAMES,
   type ChatMessageDTO,
@@ -141,10 +144,23 @@ export function ChatPanel(props: Props) {
   const chatSessionId = isNew ? null : props.chatSession.id;
 
   const send = React.useCallback(
-    async (text: string) => {
+    async (
+      text: string,
+      opts?: {
+        /**
+         * When set, the user message is NOT re-appended and the assistant
+         * message with this id is replaced (used by 重新生成). The caller
+         * should only pass this when the prior user message is already
+         * persisted on the server.
+         */
+        replaceAssistantId?: string;
+      }
+    ) => {
       const trimmed = text.trim();
       if (!trimmed || sending) return;
       setSending(true);
+
+      const replaceAssistantId = opts?.replaceAssistantId;
 
       try {
         // Lazily create a ChatSession when this is the first message in a
@@ -172,19 +188,35 @@ export function ChatPanel(props: Props) {
         }
 
         // Optimistic user message + placeholder for the assistant stream.
-        const userId = `u-${Date.now()}`;
-        const asstId = `a-${Date.now()}`;
-        setMessages((prev) => [
-          ...prev,
-          { id: userId, role: "user", content: trimmed },
-          { id: asstId, role: "assistant", content: "", streaming: true },
-        ]);
-        setInput("");
+        // When regenerating, we reuse the existing assistant id (no new user
+        // bubble) and clear its content so the streaming UI takes over.
+        const asstId = replaceAssistantId ?? `a-${Date.now()}`;
+        if (replaceAssistantId) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === replaceAssistantId
+                ? { ...m, content: "", streaming: true }
+                : m
+            )
+          );
+        } else {
+          const userId = `u-${Date.now()}`;
+          setMessages((prev) => [
+            ...prev,
+            { id: userId, role: "user", content: trimmed },
+            { id: asstId, role: "assistant", content: "", streaming: true },
+          ]);
+          setInput("");
+        }
 
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chatSessionId: sid, message: trimmed }),
+          body: JSON.stringify({
+            chatSessionId: sid,
+            message: trimmed,
+            ...(replaceAssistantId ? { regenerate: true } : {}),
+          }),
         });
         if (!res.ok || !res.body) {
           throw new Error(`/api/chat -> ${res.status}`);
@@ -263,15 +295,74 @@ export function ChatPanel(props: Props) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : "发送失败";
         toast.error(msg);
-        setMessages((prev) =>
-          prev.filter((m) => !(m.role === "assistant" && m.streaming))
-        );
+        if (replaceAssistantId) {
+          // Leave the original assistant bubble visible but stop the spinner.
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === replaceAssistantId ? { ...m, streaming: false } : m
+            )
+          );
+        } else {
+          setMessages((prev) =>
+            prev.filter((m) => !(m.role === "assistant" && m.streaming))
+          );
+        }
       } finally {
         setSending(false);
       }
     },
     [chatSessionId, boundRecordingId, sending, router]
   );
+
+  /**
+   * Regenerate the assistant message at `asstMessageId` by re-sending the
+   * preceding user message. Replaces the existing bubble in-place rather than
+   * appending a new turn.
+   */
+  const regenerate = React.useCallback(
+    (asstMessageId: string) => {
+      if (sending) return;
+      // Find the user message immediately preceding this assistant message.
+      let prevUserContent: string | null = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].id !== asstMessageId) continue;
+        for (let j = i - 1; j >= 0; j--) {
+          if (messages[j].role === "user") {
+            prevUserContent = messages[j].content;
+            break;
+          }
+        }
+        break;
+      }
+      if (!prevUserContent) {
+        toast.error("找不到上一条用户消息");
+        return;
+      }
+      void send(prevUserContent, { replaceAssistantId: asstMessageId });
+    },
+    [messages, send, sending]
+  );
+
+  const copyToClipboard = React.useCallback(async (text: string) => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for non-secure contexts.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      toast.success("已复制到剪贴板");
+    } catch {
+      toast.error("复制失败");
+    }
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -322,10 +413,15 @@ export function ChatPanel(props: Props) {
         </Button>
       </div>
 
-      {/* Body — message stream OR empty state */}
+      {/* Body — message stream OR empty state.
+       *
+       * `justify-end` makes the message column stack from the bottom near
+       * the composer when only the first user message is in flight, instead
+       * of clinging to the top of a tall scroll region.
+       */}
       <div
         ref={scrollerRef}
-        className="flex-1 overflow-y-auto px-6 py-6"
+        className="flex flex-1 flex-col justify-end overflow-y-auto px-6 py-6"
       >
         {showEmptyState ? (
           <EmptyState
@@ -339,27 +435,50 @@ export function ChatPanel(props: Props) {
             }}
           />
         ) : (
-          <ul className="mx-auto flex max-w-3xl flex-col gap-4">
-            {messages.map((m) => (
-              <li
-                key={m.id}
-                className={cn(
-                  "flex",
-                  m.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
-                <div
+          <ul className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+            {messages.map((m) => {
+              const isUser = m.role === "user";
+              const isAssistantPending = !isUser && m.streaming;
+              return (
+                <li
+                  key={m.id}
                   className={cn(
-                    "max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                    m.role === "user"
-                      ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900"
-                      : "bg-zinc-100 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100"
+                    "group/msg flex flex-col",
+                    isUser ? "items-end" : "items-start"
                   )}
                 >
-                  {m.content || (m.streaming ? <ThinkingDots /> : "")}
-                </div>
-              </li>
-            ))}
+                  <div
+                    className={cn(
+                      "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+                      isUser
+                        ? "whitespace-pre-wrap bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900"
+                        : "bg-zinc-100 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100"
+                    )}
+                  >
+                    {isUser ? (
+                      m.content
+                    ) : m.content ? (
+                      <MarkdownMessage content={m.content} />
+                    ) : m.streaming ? (
+                      <ThinkingDots />
+                    ) : (
+                      ""
+                    )}
+                  </div>
+                  {/* Hover toolbar — hidden while the assistant is streaming
+                   * to avoid letting users hit 重新生成 mid-stream. */}
+                  {!isAssistantPending && m.content ? (
+                    <MessageToolbar
+                      align={isUser ? "end" : "start"}
+                      onCopy={() => void copyToClipboard(m.content)}
+                      onRegenerate={
+                        isUser ? undefined : () => regenerate(m.id)
+                      }
+                    />
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -514,6 +633,52 @@ function ThinkingDots() {
       <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:-0.15s]" />
       <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400" />
     </span>
+  );
+}
+
+/**
+ * Small icon-only action row that fades in under a message on hover.
+ * Mirrors the lecsync.com toolbar (复制 for both roles, plus 重新生成 for
+ * assistant messages).
+ */
+function MessageToolbar({
+  align,
+  onCopy,
+  onRegenerate,
+}: {
+  align: "start" | "end";
+  onCopy: () => void;
+  onRegenerate?: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "mt-1 flex items-center gap-0.5 opacity-0 transition-opacity",
+        "group-hover/msg:opacity-100 focus-within:opacity-100",
+        align === "end" ? "self-end" : "self-start"
+      )}
+    >
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label="复制"
+        title="复制"
+        className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+      >
+        <Copy className="h-3.5 w-3.5" />
+      </button>
+      {onRegenerate ? (
+        <button
+          type="button"
+          onClick={onRegenerate}
+          aria-label="重新生成"
+          title="重新生成"
+          className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
