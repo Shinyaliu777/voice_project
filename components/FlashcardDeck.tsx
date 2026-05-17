@@ -130,21 +130,28 @@ export function FlashcardDeck({
       </Card>
 
       {revealed ? (
-        <div className="grid grid-cols-6 gap-1.5">
-          {([0, 1, 2, 3, 4, 5] as const).map((r) => (
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { rating: 1 as const, label: "重来", hint: "完全不记得，明天再练", tone: "destructive" as const },
+            { rating: 3 as const, label: "良好", hint: "想了一下答对了", tone: "outline" as const },
+            { rating: 5 as const, label: "简单", hint: "毫无难度", tone: "default" as const },
+          ].map(({ rating, label, hint, tone }) => (
             <Button
-              key={r}
-              variant={r < 3 ? "outline" : "default"}
+              key={rating}
+              variant={tone}
               size="sm"
               disabled={submitting}
-              onClick={() => submitRating(r)}
-              title={RATING_LABELS[r]}
-              className="flex-col gap-0.5 py-2 text-xs"
+              onClick={() => submitRating(rating)}
+              title={`${label} — ${hint}`}
+              className="flex h-auto flex-col items-center gap-0.5 py-2.5"
             >
               {submitting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <span className="text-sm font-semibold">{r}</span>
+                <>
+                  <span className="text-sm font-semibold">{label}</span>
+                  <span className="text-[10px] font-normal opacity-70">{hint}</span>
+                </>
               )}
             </Button>
           ))}

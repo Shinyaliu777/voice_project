@@ -450,10 +450,7 @@ export function Recorder({
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
-          <Badge variant="destructive" className="gap-1.5">
-            <Radio className="h-3.5 w-3.5 animate-pulse" />
-            Live
-          </Badge>
+          <ConnectionPill status={state.status} />
           <LevelMeter level={state.level} />
           <span className="font-mono text-sm tabular-nums text-zinc-600 dark:text-zinc-300">
             {formatElapsed(elapsedMs)}
@@ -605,6 +602,77 @@ export function Recorder({
 // ------------------------------------------------------------------
 // Subcomponents
 // ------------------------------------------------------------------
+
+function ConnectionPill({ status }: { status: RecorderState }) {
+  // Map recorder state -> label + tone. All variants are visible without
+  // truncation so the user always knows what's going on.
+  let label: string;
+  let tone: "live" | "warn" | "off" | "ok";
+  let pulse = false;
+  switch (status) {
+    case "recording":
+      label = "Live";
+      tone = "live";
+      pulse = true;
+      break;
+    case "paused":
+      label = "已暂停";
+      tone = "warn";
+      break;
+    case "permission":
+      label = "请求权限…";
+      tone = "warn";
+      break;
+    case "connecting":
+      label = "连接中…";
+      tone = "warn";
+      pulse = true;
+      break;
+    case "connected":
+      label = "已连接";
+      tone = "ok";
+      break;
+    case "reconnecting":
+      label = "重连中…";
+      tone = "warn";
+      pulse = true;
+      break;
+    case "stopping":
+      label = "结束中…";
+      tone = "off";
+      break;
+    case "ended":
+      label = "已结束";
+      tone = "off";
+      break;
+    case "error":
+      label = "出错";
+      tone = "warn";
+      break;
+    default:
+      label = "已断开";
+      tone = "off";
+  }
+
+  const toneClass = {
+    live: "border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300",
+    warn: "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200",
+    ok: "border-emerald-300 bg-emerald-100 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200",
+    off: "border-zinc-300 bg-zinc-100 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300",
+  }[tone];
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium",
+        toneClass
+      )}
+    >
+      <Radio className={cn("h-3 w-3", pulse && "animate-pulse")} />
+      {label}
+    </span>
+  );
+}
 
 function LevelMeter({ level }: { level: number }) {
   const bars = 12;
