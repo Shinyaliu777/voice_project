@@ -76,6 +76,7 @@ Only `SONIOX_API_KEY` is strictly required for the core record/transcribe loop. 
 | `STORAGE_DRIVER` | `local` (default) or `s3` | no |
 | `S3_*` | S3-compatible storage when `STORAGE_DRIVER=s3` | only if s3 |
 | `LLM_DEFAULT_PROVIDER` | `gemini` or `anthropic` | no |
+| `REDIS_URL` | Multi-instance live-share fanout (optional) | no |
 
 The local translator path needs no key — it runs entirely in the browser.
 
