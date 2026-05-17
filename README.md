@@ -284,6 +284,71 @@ lib/
   contracts.ts          All TypeScript types shared by routes + browser code
 ```
 
+## Deployment
+
+The recommended Phase 1 production stack is **Vercel + Neon Postgres + Cloudflare R2 + Upstash Redis** — all four have generous free tiers and slot straight into the codebase as-is. Once keys are filled in, deployment is one `git push` (Vercel deploys via its GitHub integration).
+
+See [`.env.production.example`](./.env.production.example) for the full list of variables you'll need to paste into Vercel.
+
+### 1. Neon (Postgres)
+
+1. Sign up at [neon.tech](https://neon.tech) (free tier is enough for Phase 1).
+2. Create a project — pick a region close to your Vercel deployment.
+3. Copy the pooled connection string (with `sslmode=require`) shown on the project page. This is your `DATABASE_URL`.
+4. Provision the schema once from your laptop:
+   ```bash
+   DATABASE_URL="postgresql://...neon.tech/...?sslmode=require" npm run db:push
+   ```
+   `db:push` only needs to run once per schema change — Vercel deploys will not run migrations automatically.
+
+### 2. Cloudflare R2 (audio + document storage)
+
+1. Sign up at [cloudflare.com](https://cloudflare.com) → R2 (no card required for the free tier).
+2. Create a bucket named **`voice-project`** in a region near your Vercel deployment.
+3. Under **R2 → Manage API tokens**, create a token with **Object Read & Write** scoped to the `voice-project` bucket. Copy the Access Key ID + Secret.
+4. Fill in `S3_*` in your Vercel env:
+   - `S3_ENDPOINT` — `https://<account_id>.r2.cloudflarestorage.com` (shown on the bucket page)
+   - `S3_REGION` — `auto`
+   - `S3_BUCKET` — `voice-project`
+   - `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` — from step 3
+   - `S3_PUBLIC_BASE` — either the R2 public dev URL (`https://pub-<hash>.r2.dev`) or a custom domain CNAMEd to the bucket
+5. Set `STORAGE_DRIVER="s3"`.
+
+### 3. Upstash Redis (live-share fan-out)
+
+The in-memory `lib/live-share/broadcaster.ts` only works inside a single Node process. On Vercel each function invocation can land on a different container, so live-share viewers won't see updates from the host unless they happen to be on the same instance. Redis pub/sub fixes that.
+
+1. Sign up at [upstash.com](https://upstash.com) (free tier is fine).
+2. Create a Redis database — pick the same region as your Vercel deployment if possible.
+3. Copy the **TLS** connection URL (it starts with `rediss://default:<password>@<host>:<port>`). This is your `REDIS_URL`.
+
+Redis is technically optional — without it, live-share still works for viewers attached to the same instance as the host, which is fine for local dev. Set `REDIS_URL=""` to skip.
+
+### 4. Vercel
+
+1. Push this repo to GitHub.
+2. In Vercel: **Add New Project** → import the repo. Framework auto-detects as Next.js.
+3. Open **Settings → Environment Variables** and paste every variable from `.env.production.example` (filled with the values from steps 1–3 above).
+4. Click **Deploy**. The first build takes about 2 minutes.
+
+CI (`.github/workflows/ci.yml`) runs typecheck + lint + build on every PR — these pass before Vercel even gets the deploy hook.
+
+### 5. Public live-share URL
+
+Once a host clicks **实时分享** on a session, the response contains a token. The viewer URL is:
+
+```
+https://your-app.vercel.app/share/live/<token>
+```
+
+Anyone with the URL can read the live transcript over SSE — no login. Tokens are scoped to one session and cannot be revoked in Phase 1, so treat them like API keys.
+
+### Limits in Phase 1
+
+> **Single-user deployment.** Every session on a freshly deployed instance still belongs to the one dev user defined by `DEV_USER_EMAIL`. There's no signup, no login, no per-user data isolation. Anyone who can reach the dashboard URL sees every session ever recorded on that deployment.
+>
+> Multi-tenant auth (NextAuth + per-user data scoping) ships in **Phase 2 wave 2**. Until then, deploy behind a private Vercel preview / password protection if your transcripts are sensitive.
+
 ## Notes
 
 - The default LLM model IDs in `.env.example` point at Gemini Flash for cost — swap to Claude / a larger Gemini if you want better minutes / chat quality.

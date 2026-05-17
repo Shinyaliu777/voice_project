@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Lint, typecheck, build
+    runs-on: ubuntu-latest
+
+    # The dashboard page is server-rendered against Prisma at build time, so
+    # `next build` needs a reachable Postgres. We boot a throwaway one as a
+    # service container and push the schema into it. Vercel doesn't go through
+    # this path — it runs `next build` with the real DATABASE_URL — but for CI
+    # we want to validate end-to-end that the build compiles against a real DB.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: stub
+          POSTGRES_PASSWORD: stub
+          POSTGRES_DB: stub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://stub:stub@localhost:5432/stub
+      # Keep Next.js telemetry quiet on CI.
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Prisma db push
+        run: npx prisma db push --skip-generate --accept-data-loss
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        # Lint config hasn't been initialized yet (`next lint` prompts on first
+        # run). Skip cleanly when it's missing instead of hanging on the prompt.
+        # Remove this guard once an ESLint config lands.
+        run: |
+          if [ -f .eslintrc.json ] || [ -f .eslintrc.js ] || [ -f eslint.config.js ] || [ -f eslint.config.mjs ]; then
+            npm run lint
+          else
+            echo "No ESLint config found — skipping lint."
+          fi
+
+      - name: Build
+        run: npm run build
