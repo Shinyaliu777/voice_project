@@ -85,6 +85,18 @@ export class Recorder {
   /** Maps DB segment id → the in-app utterance id we emitted, so we can fan
    *  a translation PATCH back out as an `utterance` event the UI picks up. */
   private segmentToUtterance: Map<string, string> = new Map();
+  /** Per-speaker live-translate bookkeeping for "local" mode. Soniox already
+   *  paired translation in "cloud" mode, but in "local" mode we run Chrome
+   *  Translator over the in-flight source on a debounce so the LIVE card
+   *  shows growing translation alongside the source. */
+  private liveTranslate: Map<
+    number | undefined,
+    {
+      lastTranslated: string;
+      timer: ReturnType<typeof setTimeout> | null;
+      inFlight: boolean;
+    }
+  > = new Map();
 
   // ---- chunk upload pipeline ----
   private mediaRecorder: MediaRecorder | null = null;
@@ -707,8 +719,16 @@ export class Recorder {
       // <end> marks utterance boundary — never render it as text.
       if (tok.text === "<end>") {
         if (isFinal) {
+          // Preserve any live-translated text we wrote into transPending so
+          // the finalized card / segment POST keeps it (otherwise translate
+          // would run again post-finalize and waste a Chrome API call).
+          if (u.transPending && !u.transFinal) {
+            u.transFinal = u.transPending;
+            u.transPending = "";
+          }
           finalizedThisFrame.push(u);
           this.currentUtterances.delete(speakerId);
+          this.liveTranslate.delete(speakerId);
         }
         continue;
       }
@@ -738,6 +758,7 @@ export class Recorder {
       // every sentence boundary on its own).
       if (this.splitOffCompletedSentences(u)) didSplit = true;
       this.emitUtterance(u, false);
+      this.scheduleLiveTranslate(u);
     }
 
     // Emit + queue POST for utterances that hit <end> this frame.
@@ -786,6 +807,67 @@ export class Recorder {
     this.emitUtterance(splitOff, true);
     this.finalizeQueue.push(splitOff);
     return true;
+  }
+
+  /**
+   * Local-mode only: while an utterance is still growing, kick off Chrome
+   * Translator on the running source text on a short debounce so the LIVE
+   * card shows translation that grows alongside the source. Without this
+   * translation only appears AFTER <end>, which makes the live block feel
+   * like it's missing the bottom half.
+   */
+  private scheduleLiveTranslate(u: UtteranceBuilder): void {
+    if (this.config.translationMode !== "local") return;
+    const source = (u.sourceFinal + u.sourcePending).trim();
+    if (!source) return;
+    const speakerKey = u.speakerId;
+    const state =
+      this.liveTranslate.get(speakerKey) ??
+      { lastTranslated: "", timer: null, inFlight: false };
+    this.liveTranslate.set(speakerKey, state);
+    if (state.lastTranslated === source) return;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    state.timer = setTimeout(async () => {
+      state.timer = null;
+      if (state.inFlight) {
+        // A later debounce will pick up the newer text; skip to avoid races.
+        return;
+      }
+      // Only translate if this utterance is still the in-flight one for the
+      // same speaker — otherwise we're chasing a stale builder.
+      const live = this.currentUtterances.get(speakerKey);
+      if (live !== u) return;
+      const latest = (u.sourceFinal + u.sourcePending).trim();
+      if (!latest || latest === state.lastTranslated) return;
+      state.inFlight = true;
+      try {
+        const translator = await this.getOrCreateChromeTranslator();
+        if (!translator) return;
+        const translated = await translator.translate(latest);
+        // Bail if u was finalized while we were translating.
+        if (this.currentUtterances.get(speakerKey) !== u) return;
+        state.lastTranslated = latest;
+        u.transFinal = ""; // we replace, not append
+        u.transPending = translated;
+        this.emitUtterance(u, false);
+      } catch {
+        // Swallow — error path already surfaces via translateLocal's emitError
+        // when post-finalize translation runs.
+      } finally {
+        state.inFlight = false;
+        // If source advanced again during translation, re-schedule.
+        const after = this.currentUtterances.get(speakerKey);
+        if (after === u) {
+          const now = (u.sourceFinal + u.sourcePending).trim();
+          if (now && now !== state.lastTranslated) {
+            this.scheduleLiveTranslate(u);
+          }
+        }
+      }
+    }, 350);
   }
 
   private emitUtterance(u: UtteranceBuilder, isFinal: boolean): void {
