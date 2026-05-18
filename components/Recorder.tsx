@@ -704,8 +704,10 @@ export function Recorder({
   return (
     <div className="mx-auto flex w-full max-w-[1600px] gap-4 px-4 pb-4 pt-4 min-h-[calc(100vh-3rem)]">
     <div className="flex w-full min-w-0 flex-1 flex-col gap-4">
-      {/* Top bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
+      {/* Top action bar — flat items inline, no boxed background, matching
+          lecsync's recording header where state pill + buttons just live
+          on the page background. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
         <div className="flex items-center gap-3">
           <ConnectionPill status={state.status} />
           <LevelMeter level={state.level} />
@@ -762,50 +764,6 @@ export function Recorder({
         </div>
       </div>
 
-      {/* Bottom transport bar — mirrors lecsync's player-style control
-          row. Holds in-flight recording controls (bookmark, PIP, pause)
-          so the top bar stays minimal. */}
-      <div className="flex items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950">
-        {sessionId && (
-          <BookmarkInRecording
-            sessionId={sessionId}
-            getCurrentMs={getCurrentMs}
-            disabled={!recording}
-          />
-        )}
-        <FloatingSubtitleToggle
-          items={floatingItems}
-          recording={recording}
-          showTranslation={showTranslation}
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={async () => {
-            const rec = recorderRef.current;
-            if (!rec) return;
-            if (state.status === "paused") {
-              await rec.resume();
-            } else if (state.status === "recording") {
-              await rec.pause();
-            }
-          }}
-          disabled={state.status !== "recording" && state.status !== "paused"}
-        >
-          {state.status === "paused" ? (
-            <>
-              <Play className="h-4 w-4" />
-              <span>继续</span>
-            </>
-          ) : (
-            <>
-              <Pause className="h-4 w-4" />
-              <span>暂停</span>
-            </>
-          )}
-        </Button>
-      </div>
-
       {sessionId ? (
         <LiveShareDialog
           sessionId={sessionId}
@@ -826,8 +784,55 @@ export function Recorder({
         recording={recording}
       />
 
-      {/* Live minutes used to live in a card here. It's now in the right
-          sidebar (`<RecorderSidebar />`) below, along with chat + files. */}
+      {/* Bottom transport bar — pill-shaped, centered, pushed to bottom
+          via mt-auto so the column has the same "music player" feel as
+          lecsync's recording page. */}
+      <div className="mt-auto flex justify-center pt-4">
+        <div className="flex items-center gap-1 rounded-full border border-zinc-200 bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95">
+          <span className="px-2 font-mono text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+            {state.status === "paused" ? "已暂停" : "录制中"} ·{" "}
+            {formatElapsed(elapsedMs)}
+          </span>
+          <span className="mx-1 h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
+          {sessionId && (
+            <BookmarkInRecording
+              sessionId={sessionId}
+              getCurrentMs={getCurrentMs}
+              disabled={!recording}
+            />
+          )}
+          <FloatingSubtitleToggle
+            items={floatingItems}
+            recording={recording}
+            showTranslation={showTranslation}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full"
+            onClick={async () => {
+              const rec = recorderRef.current;
+              if (!rec) return;
+              if (state.status === "paused") {
+                await rec.resume();
+              } else if (state.status === "recording") {
+                await rec.pause();
+              }
+            }}
+            disabled={
+              state.status !== "recording" && state.status !== "paused"
+            }
+            title={state.status === "paused" ? "继续" : "暂停"}
+            aria-label={state.status === "paused" ? "继续" : "暂停"}
+          >
+            {state.status === "paused" ? (
+              <Play className="h-4 w-4" />
+            ) : (
+              <Pause className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      </div>
 
       <Dialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
         <DialogContent className="sm:max-w-md">

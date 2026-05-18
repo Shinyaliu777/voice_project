@@ -182,14 +182,15 @@ export function FloatingSubtitleToggle({
     <>
       <Button
         type="button"
-        variant={open ? "secondary" : "outline"}
-        size="sm"
+        variant={open ? "secondary" : "ghost"}
+        size="icon"
         onClick={handleToggle}
         disabled={opening}
-        className={className}
+        title={open ? "关闭悬浮字幕" : "悬浮字幕"}
+        aria-label={open ? "关闭悬浮字幕" : "悬浮字幕"}
+        className={cn("h-8 w-8 rounded-full", className)}
       >
         {open ? <X className="h-4 w-4" /> : <PictureInPicture2 className="h-4 w-4" />}
-        <span>{open ? "关闭悬浮字幕" : "悬浮字幕"}</span>
       </Button>
 
       {open && container
