@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { getDevUserId } from "@/lib/dev-user";
+import { getDevUserId, UnauthenticatedError } from "@/lib/dev-user";
+import { ensureQuota, QuotaExceededError } from "@/lib/quota";
 import { getLLMProvider } from "@/lib/llm";
 import { buildChatSystemPrompt } from "@/lib/prompts/chat";
 import type { LLMMessage } from "@/lib/contracts";
@@ -56,7 +57,28 @@ function buildTranscriptSnippet(
 }
 
 export async function POST(req: Request) {
-  const userId = await getDevUserId();
+  let userId: string;
+  try {
+    userId = await getDevUserId();
+  } catch (e) {
+    if (e instanceof UnauthenticatedError) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    throw e;
+  }
+
+  // Daily chat quota gate.
+  try {
+    await ensureQuota(userId, "chat");
+  } catch (e) {
+    if (e instanceof QuotaExceededError) {
+      return NextResponse.json(
+        { error: "Quota exceeded", kind: e.kind, info: e.info },
+        { status: 402 }
+      );
+    }
+    throw e;
+  }
 
   let body: z.infer<typeof ChatRequestBodySchema>;
   try {

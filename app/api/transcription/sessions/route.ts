@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
-import { getDevUserId } from "@/lib/dev-user";
+import { getDevUserId, UnauthenticatedError } from "@/lib/dev-user";
+import { ensureQuota, QuotaExceededError } from "@/lib/quota";
 import { toSessionDTO } from "@/lib/api/dto";
 import {
   SUPPORTED_LANGUAGES,
@@ -110,7 +111,35 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const userId = await getDevUserId();
+  let userId: string;
+  try {
+    userId = await getDevUserId();
+  } catch (e) {
+    if (e instanceof UnauthenticatedError) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    throw e;
+  }
+
+  // Quota gate — block new recording when this month's minutes are spent.
+  // Existing in-progress recordings are unaffected; the user just can't
+  // open a new one until next month or after they upgrade.
+  try {
+    await ensureQuota(userId, "recording");
+  } catch (e) {
+    if (e instanceof QuotaExceededError) {
+      return NextResponse.json(
+        {
+          error: "Quota exceeded",
+          kind: e.kind,
+          info: e.info,
+        },
+        { status: 402 }
+      );
+    }
+    throw e;
+  }
+
   let body: unknown;
   try {
     body = await req.json();
