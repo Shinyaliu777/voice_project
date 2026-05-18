@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ChevronDown,
   ChevronRight,
   Copy,
   Globe,
@@ -20,6 +21,12 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { MarkdownMessage } from "@/components/MarkdownMessage";
 import {
   LANGUAGE_NAMES,
@@ -422,13 +429,19 @@ export function ChatPanel(props: Props) {
 
       {/* Body — message stream OR empty state.
        *
-       * `justify-end` makes the message column stack from the bottom near
-       * the composer when only the first user message is in flight, instead
-       * of clinging to the top of a tall scroll region.
+       * Subtle: only apply `justify-end` when in the empty state. With
+       * messages present, `justify-end` + `overflow-y-auto` is a known
+       * flex quirk that prevents scrolling UP to earlier content —
+       * overflowed content above the visible area is unreachable. We
+       * use normal top→bottom flow when there are messages and rely on
+       * the auto-scroll effect to pin to the bottom.
        */}
       <div
         ref={scrollerRef}
-        className="flex flex-1 flex-col justify-end overflow-y-auto px-6 py-6"
+        className={cn(
+          "flex flex-1 flex-col overflow-y-auto px-6 py-6",
+          showEmptyState && "justify-end"
+        )}
       >
         {showEmptyState ? (
           <EmptyState
@@ -545,17 +558,62 @@ export function ChatPanel(props: Props) {
 
           <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400">
             <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
-                  thinking
-                    ? "bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-500"
-                    : "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
-                )}
-                title={thinking ? "已切换到推理模型" : "默认模型 (deepseek-v4-flash)"}
-              >
-                <Sparkles className="h-3 w-3" /> {thinking ? "Reasoning" : "Basic"}
-              </span>
+              {/* Model picker. For us "Basic"=deepseek-v4-flash and
+                  "Pro"=deepseek-v4-pro (DeepSeek's reasoning model). Lecsync
+                  separates Basic/Pro from 思考 because both their models
+                  support thinking — DeepSeek's Pro IS the thinking model,
+                  so one control is enough. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={sending}
+                    title={
+                      thinking
+                        ? "推理模型 deepseek-v4-pro"
+                        : "默认模型 deepseek-v4-flash"
+                    }
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-900",
+                      thinking
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                        : "text-zinc-700 dark:text-zinc-300"
+                    )}
+                  >
+                    {thinking ? (
+                      <Lightbulb className="h-3 w-3" />
+                    ) : (
+                      <Sparkles className="h-3 w-3" />
+                    )}
+                    <span>{thinking ? "Pro · 推理" : "Basic"}</span>
+                    <ChevronDown className="h-3 w-3 opacity-60" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-56">
+                  <DropdownMenuItem onClick={() => setThinking(false)}>
+                    <div className="flex w-full items-start gap-2">
+                      <Sparkles className="mt-0.5 h-4 w-4 text-zinc-500" />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium">Basic</span>
+                        <span className="text-[11px] text-zinc-500">
+                          deepseek-v4-flash · 快、便宜
+                        </span>
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setThinking(true)}>
+                    <div className="flex w-full items-start gap-2">
+                      <Lightbulb className="mt-0.5 h-4 w-4 text-amber-500" />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium">Pro · 推理</span>
+                        <span className="text-[11px] text-zinc-500">
+                          deepseek-v4-pro · 慢、深入
+                        </span>
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <button
                 type="button"
                 disabled
@@ -563,24 +621,6 @@ export function ChatPanel(props: Props) {
                 className="inline-flex cursor-not-allowed items-center gap-1 rounded-full px-2 py-0.5 opacity-40"
               >
                 <Globe className="h-3 w-3" /> 联网
-              </button>
-              <button
-                type="button"
-                onClick={() => setThinking((v) => !v)}
-                disabled={sending}
-                title={
-                  thinking
-                    ? "已开启：DeepSeek V4-Pro 推理模型（更慢、更深入）"
-                    : "开启 = 切到推理模型（适合复杂问题）"
-                }
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors",
-                  thinking
-                    ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
-                    : "hover:bg-zinc-100 dark:hover:bg-zinc-900"
-                )}
-              >
-                <Lightbulb className="h-3 w-3" /> 思考
               </button>
             </div>
             <span>Enter 发送 · Shift+Enter 换行</span>
