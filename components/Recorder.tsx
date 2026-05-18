@@ -702,8 +702,8 @@ export function Recorder({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl gap-4 px-4 py-4">
-    <div className="flex w-full min-w-0 flex-1 flex-col gap-4 lg:max-w-3xl">
+    <div className="mx-auto flex w-full max-w-[1600px] gap-4 px-4 py-4">
+    <div className="flex w-full min-w-0 flex-1 flex-col gap-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
@@ -1023,37 +1023,39 @@ function UtteranceList({
 
   return (
     <div className="relative flex flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="relative min-h-[280px] flex-1">
-        <div
-          ref={scrollerRef}
-          className="h-full max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_64px)]"
-        >
-          <div className="space-y-5 p-6 pt-10">
-            {hasHistory ? (
-              <>
-                {finalIds.map((id) => {
-                  const u = byId[id];
-                  if (!u) return null;
-                  return (
-                    <Segment
-                      key={u.id}
-                      utterance={u}
-                      showTranslation={showTranslation}
-                      displayMode={displayMode}
-                      showSpeaker={multiSpeaker}
-                    />
-                  );
-                })}
-                <div ref={bottomRef} aria-hidden />
-              </>
-            ) : !showLiveCard ? (
-              <p className="py-12 text-center text-base text-zinc-400 dark:text-zinc-500">
-                正在监听…
-              </p>
-            ) : null}
+      {/* Scroller for finalized utterance history. Only takes space when
+          there's actually history — otherwise we collapse it so the LIVE
+          card sits right under the top action bar. (Previous min-h-[280px]
+          caused a big empty area before any utterance landed.) */}
+      {hasHistory ? (
+        <div className="relative flex-1">
+          <div
+            ref={scrollerRef}
+            className="h-full max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_64px)]"
+          >
+            <div className="space-y-5 p-6 pt-10">
+              {finalIds.map((id) => {
+                const u = byId[id];
+                if (!u) return null;
+                return (
+                  <Segment
+                    key={u.id}
+                    utterance={u}
+                    showTranslation={showTranslation}
+                    displayMode={displayMode}
+                    showSpeaker={multiSpeaker}
+                  />
+                );
+              })}
+              <div ref={bottomRef} aria-hidden />
+            </div>
           </div>
         </div>
-      </div>
+      ) : !showLiveCard ? (
+        <p className="py-12 text-center text-base text-zinc-400 dark:text-zinc-500">
+          正在监听…
+        </p>
+      ) : null}
 
       {showLiveCard ? (
         <div className="border-t border-zinc-100 px-4 pb-3 pt-3 dark:border-zinc-900">

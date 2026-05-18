@@ -199,6 +199,11 @@ export function SettingsDialog({
                 onClick={() => {
                   try {
                     window.localStorage.removeItem("onboarding:completed");
+                    // Re-open the tour right away rather than waiting for the
+                    // next page load — OnboardingTour listens for this event.
+                    window.dispatchEvent(
+                      new Event("voice-project:restart-onboarding")
+                    );
                   } catch {
                     /* SSR / disabled storage */
                   }

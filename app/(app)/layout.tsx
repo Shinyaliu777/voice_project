@@ -5,6 +5,7 @@ import { SidebarNav } from "@/components/SidebarNav";
 import { SearchBar } from "@/components/SearchBar";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toaster";
+import { OnboardingTour } from "@/components/OnboardingTour";
 import { getDevUser } from "@/lib/dev-user";
 
 // The entire authenticated shell depends on per-user DB data (current user,
@@ -41,6 +42,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         <div className="flex-1">{children}</div>
       </main>
       <Toaster />
+      {/* First-visit walkthrough. Self-hides via localStorage flag.
+          The "重新开始新手教程" button in SettingsDialog clears the flag;
+          we re-check on every navigation, so the tour shows after settings
+          reset without needing a hard page reload. */}
+      <OnboardingTour />
     </div>
   );
 }
