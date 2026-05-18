@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { signOut } from "next-auth/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -206,8 +207,9 @@ export function SidebarNav({
           variant="ghost"
           size="icon"
           aria-label="退出登录"
+          title="退出登录"
           onClick={() => {
-            /* placeholder */
+            void signOut({ callbackUrl: "/login" });
           }}
         >
           <LogOut className="h-4 w-4" />

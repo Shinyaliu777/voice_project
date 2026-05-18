@@ -8,14 +8,19 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  avatarUrl String?
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  /// NextAuth uses `image` for the OAuth profile picture; we keep our
+  /// existing `avatarUrl` alias as well for backwards-compat with code that
+  /// reads it. New code should prefer `image`.
+  image         String?
+  avatarUrl     String?
   /// Free-form per-user UI/notification/floating-window preferences (JSON blob)
-  settings  Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  settings      Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   folders           Folder[]
   sessions          Session[]
@@ -24,6 +29,117 @@ model User {
   liveShareSessions LiveShareSession[]
   polls             Poll[]
   pollVotes         PollVote[]
+
+  // ---- NextAuth -----------------------------------------------------
+  // We use JWT session strategy so there's no separate Session table
+  // (which would clash with our existing Session = recording-session
+  // model below). Only Account + VerificationToken are needed.
+  accounts      Account[]
+
+  // ---- Billing ------------------------------------------------------
+  subscription  Subscription?
+}
+
+// =========================================================
+// NextAuth tables (Auth.js v5 spec)
+// =========================================================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String                   // "oauth" | "email" | "credentials"
+  provider          String                   // "google" | "apple" | …
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String                          // email being verified
+  token      String                          // opaque magic-link token
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =========================================================
+// Billing (mirrors lecsync's structure; see
+// docs/LECSYNC_REVERSE_ENGINEERING.md §8 B)
+// =========================================================
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+model Plan {
+  id                       String   @id @default(cuid())
+  /// Internal slug, e.g. "free", "business"
+  name                     String   @unique
+  /// Customer-facing label, e.g. "Free", "Business"
+  displayName              String
+  description              String?
+  monthlyPriceCents        Int      @default(0)
+  yearlyPriceCents         Int      @default(0)
+  /// Recording-time quota per calendar month. 999999 = effectively unlimited.
+  monthlyMinutes           Int      @default(120)
+  /// Chat messages per day cap. 0 = unlimited (handled in code).
+  dailyChatMessages        Int      @default(20)
+  cloudTranslationIncluded Boolean  @default(true)
+  isPremium                Boolean  @default(false)
+  isActive                 Boolean  @default(true)
+  /// Newly registered users get the default plan as their initial Subscription.
+  isDefault                Boolean  @default(false)
+  /// Stripe price ids (filled in when admin links a plan to Stripe).
+  stripePriceIdMonthly     String?
+  stripePriceIdYearly      String?
+  /// Apple IAP product ids (for the iOS app, if we ship one).
+  appleProductIdMonthly    String?
+  appleProductIdYearly     String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id                       String             @id @default(cuid())
+  userId                   String             @unique
+  user                     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId                   String
+  plan                     Plan               @relation(fields: [planId], references: [id])
+  status                   SubscriptionStatus @default(ACTIVE)
+  billingCycle             BillingCycle       @default(MONTHLY)
+  currentPeriodStart       DateTime           @default(now())
+  /// null for default/free plans that don't expire.
+  currentPeriodEnd         DateTime?
+  cancelAtPeriodEnd        Boolean            @default(false)
+  isStripeSubscription     Boolean            @default(false)
+  /// "default" (auto on signup) | "stripe" | "apple_iap" | "redemption" | "admin"
+  subscriptionSource       String             @default("default")
+  stripeSubscriptionId     String?            @unique
+  stripeCustomerId         String?
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+
+  @@index([planId])
 }
 
 model Folder {
