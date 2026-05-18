@@ -4,6 +4,7 @@ import * as React from "react";
 import { Bookmark, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   Popover,
   PopoverContent,
@@ -91,12 +92,13 @@ export function BookmarkInRecording({
         <Button
           type="button"
           variant="outline"
-          size="sm"
+          size="icon"
           disabled={disabled}
-          className={className}
+          title="打书签"
+          aria-label="打书签"
+          className={cn("h-8 w-8", className)}
         >
           <Bookmark className="h-4 w-4" />
-          <span>打书签</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80">

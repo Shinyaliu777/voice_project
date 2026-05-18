@@ -756,12 +756,14 @@ export function Recorder({
           />
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
+            className="h-8 w-8"
             onClick={() => setLiveShareOpen(true)}
             disabled={!sessionId}
+            title="实时分享"
+            aria-label="实时分享"
           >
             <Share2 className="h-4 w-4" />
-            <span>实时分享</span>
           </Button>
           <Button
             variant="outline"

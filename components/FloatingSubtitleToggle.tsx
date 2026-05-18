@@ -5,6 +5,7 @@ import * as ReactDOM from "react-dom";
 import { PictureInPicture2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   FloatingSubtitleWindow,
   type FloatingSubtitleItem,
@@ -182,13 +183,14 @@ export function FloatingSubtitleToggle({
       <Button
         type="button"
         variant={open ? "secondary" : "outline"}
-        size="sm"
+        size="icon"
         onClick={handleToggle}
         disabled={opening}
-        className={className}
+        title={open ? "关闭悬浮字幕" : "悬浮字幕"}
+        aria-label={open ? "关闭悬浮字幕" : "悬浮字幕"}
+        className={cn("h-8 w-8", className)}
       >
         {open ? <X className="h-4 w-4" /> : <PictureInPicture2 className="h-4 w-4" />}
-        <span>{open ? "关闭悬浮字幕" : "悬浮字幕"}</span>
       </Button>
 
       {open && container
