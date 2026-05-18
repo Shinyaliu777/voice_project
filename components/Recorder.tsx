@@ -627,6 +627,40 @@ export function Recorder({
   const showTranslation = translationMode !== "off";
   const recording = state.status === "recording";
 
+  // Split the utterance stream into "history" (finalized) and the single
+  // in-flight one that powers the bottom LIVE card. Lecsync renders these
+  // as distinct regions — transcript at top, LIVE card clustered with the
+  // transport pill at the bottom — so we lift the split out of UtteranceList
+  // and place LiveCard as its own sibling further down.
+  const { liveUtterance, finalIds, multiSpeaker } = React.useMemo(() => {
+    let liveId: string | null = null;
+    for (let i = state.order.length - 1; i >= 0; i--) {
+      const u = state.byId[state.order[i]];
+      if (u && !u.isFinal) {
+        liveId = u.id;
+        break;
+      }
+    }
+    const finals = liveId
+      ? state.order.filter((id) => id !== liveId)
+      : state.order;
+    const live = liveId ? state.byId[liveId] ?? null : null;
+    const speakers = new Set<number>();
+    for (const id of finals) {
+      const u = state.byId[id];
+      if (u?.speakerId != null) speakers.add(u.speakerId);
+    }
+    if (live?.speakerId != null) speakers.add(live.speakerId);
+    return {
+      liveUtterance: live,
+      finalIds: finals,
+      multiSpeaker: speakers.size > 1,
+    };
+  }, [state.order, state.byId]);
+
+  const hasHistory = finalIds.length > 0;
+  const showLiveCard = liveUtterance !== null || recording;
+
   // ----------------------------------------------------------------
   // Render
   // ----------------------------------------------------------------
@@ -775,62 +809,77 @@ export function Recorder({
         />
       ) : null}
 
-      {/* Utterance stream */}
-      <UtteranceList
-        order={state.order}
-        byId={state.byId}
-        showTranslation={showTranslation}
-        displayMode={displayMode}
-        recording={recording}
-      />
+      {/* Transcript history — only rendered when there's something finalized.
+          The in-flight LIVE card is intentionally NOT inside this card; it
+          lives in the bottom cluster below so it sits with the transport
+          pill, matching lecsync's "music player" recording page. */}
+      {hasHistory ? (
+        <UtteranceList
+          finalIds={finalIds}
+          byId={state.byId}
+          showTranslation={showTranslation}
+          displayMode={displayMode}
+          multiSpeaker={multiSpeaker}
+        />
+      ) : null}
 
-      {/* Bottom transport bar — pill-shaped, centered, pushed to bottom
-          via mt-auto so the column has the same "music player" feel as
-          lecsync's recording page. */}
-      <div className="mt-auto flex justify-center pt-4">
-        <div className="flex items-center gap-1 rounded-full border border-zinc-200 bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95">
-          <span className="px-2 font-mono text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
-            {state.status === "paused" ? "已暂停" : "录制中"} ·{" "}
-            {formatElapsed(elapsedMs)}
-          </span>
-          <span className="mx-1 h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
-          {sessionId && (
-            <BookmarkInRecording
-              sessionId={sessionId}
-              getCurrentMs={getCurrentMs}
-              disabled={!recording}
-            />
-          )}
-          <FloatingSubtitleToggle
-            items={floatingItems}
+      {/* Bottom cluster: LIVE card + transport pill, pushed to the bottom
+          via mt-auto so empty middle space stays between the transcript and
+          this group. */}
+      <div className="mt-auto flex flex-col gap-3 pt-4">
+        {showLiveCard ? (
+          <LiveCard
+            utterance={liveUtterance}
             recording={recording}
             showTranslation={showTranslation}
+            displayMode={displayMode}
           />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded-full"
-            onClick={async () => {
-              const rec = recorderRef.current;
-              if (!rec) return;
-              if (state.status === "paused") {
-                await rec.resume();
-              } else if (state.status === "recording") {
-                await rec.pause();
-              }
-            }}
-            disabled={
-              state.status !== "recording" && state.status !== "paused"
-            }
-            title={state.status === "paused" ? "继续" : "暂停"}
-            aria-label={state.status === "paused" ? "继续" : "暂停"}
-          >
-            {state.status === "paused" ? (
-              <Play className="h-4 w-4" />
-            ) : (
-              <Pause className="h-4 w-4" />
+        ) : null}
+        <div className="flex justify-center">
+          <div className="flex items-center gap-1 rounded-full border border-zinc-200 bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95">
+            <span className="px-2 font-mono text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+              {state.status === "paused" ? "已暂停" : "录制中"} ·{" "}
+              {formatElapsed(elapsedMs)}
+            </span>
+            <span className="mx-1 h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
+            {sessionId && (
+              <BookmarkInRecording
+                sessionId={sessionId}
+                getCurrentMs={getCurrentMs}
+                disabled={!recording}
+              />
             )}
-          </Button>
+            <FloatingSubtitleToggle
+              items={floatingItems}
+              recording={recording}
+              showTranslation={showTranslation}
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full"
+              onClick={async () => {
+                const rec = recorderRef.current;
+                if (!rec) return;
+                if (state.status === "paused") {
+                  await rec.resume();
+                } else if (state.status === "recording") {
+                  await rec.pause();
+                }
+              }}
+              disabled={
+                state.status !== "recording" && state.status !== "paused"
+              }
+              title={state.status === "paused" ? "继续" : "暂停"}
+              aria-label={state.status === "paused" ? "继续" : "暂停"}
+            >
+              {state.status === "paused" ? (
+                <Play className="h-4 w-4" />
+              ) : (
+                <Pause className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -976,102 +1025,53 @@ function LevelMeter({ level }: { level: number }) {
 }
 
 interface UtteranceListProps {
-  order: string[];
+  finalIds: string[];
   byId: Record<string, Utterance>;
   showTranslation: boolean;
   displayMode: DisplayMode;
-  recording: boolean;
+  multiSpeaker: boolean;
 }
 
 function UtteranceList({
-  order,
+  finalIds,
   byId,
   showTranslation,
   displayMode,
-  recording,
+  multiSpeaker,
 }: UtteranceListProps) {
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
 
-  // The last in-flight (non-final) utterance powers the bottom live card.
-  // Everything else flows into the history stream above it.
-  let liveId: string | null = null;
-  for (let i = order.length - 1; i >= 0; i--) {
-    const u = byId[order[i]];
-    if (u && !u.isFinal) {
-      liveId = u.id;
-      break;
-    }
-  }
-  const finalIds = liveId ? order.filter((id) => id !== liveId) : order;
-  const liveUtterance = liveId ? byId[liveId] ?? null : null;
-
-  // Whether the segment headers need to show speaker names. Lecsync only does
-  // this when there's actually more than one speaker in the conversation.
-  const multiSpeaker = React.useMemo(() => {
-    const ids = new Set<number>();
-    for (const id of finalIds) {
-      const u = byId[id];
-      if (u?.speakerId != null) ids.add(u.speakerId);
-    }
-    if (liveUtterance?.speakerId != null) ids.add(liveUtterance.speakerId);
-    return ids.size > 1;
-  }, [finalIds, byId, liveUtterance]);
-
   // Pin to bottom when content grows, matching lecsync's live cadence.
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [order.length, liveId, byId]);
-
-  const hasHistory = finalIds.length > 0;
-  const showLiveCard = liveUtterance !== null || recording;
+  }, [finalIds.length, byId]);
 
   return (
     <div className="relative flex flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800/80 dark:bg-zinc-950">
-      {/* Scroller for finalized utterance history. Only takes space when
-          there's actually history — otherwise we collapse it so the LIVE
-          card sits right under the top action bar. (Previous min-h-[280px]
-          caused a big empty area before any utterance landed.) */}
-      {hasHistory ? (
-        <div className="relative flex-1">
-          <div
-            ref={scrollerRef}
-            className="h-full max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_64px)]"
-          >
-            <div className="space-y-5 p-6 pt-10">
-              {finalIds.map((id) => {
-                const u = byId[id];
-                if (!u) return null;
-                return (
-                  <Segment
-                    key={u.id}
-                    utterance={u}
-                    showTranslation={showTranslation}
-                    displayMode={displayMode}
-                    showSpeaker={multiSpeaker}
-                  />
-                );
-              })}
-              <div ref={bottomRef} aria-hidden />
-            </div>
+      <div className="relative flex-1">
+        <div
+          ref={scrollerRef}
+          className="h-full max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_64px)]"
+        >
+          <div className="space-y-5 p-6 pt-10">
+            {finalIds.map((id) => {
+              const u = byId[id];
+              if (!u) return null;
+              return (
+                <Segment
+                  key={u.id}
+                  utterance={u}
+                  showTranslation={showTranslation}
+                  displayMode={displayMode}
+                  showSpeaker={multiSpeaker}
+                />
+              );
+            })}
+            <div ref={bottomRef} aria-hidden />
           </div>
         </div>
-      ) : !showLiveCard ? (
-        <p className="py-12 text-center text-base text-zinc-400 dark:text-zinc-500">
-          正在监听…
-        </p>
-      ) : null}
-
-      {showLiveCard ? (
-        <div className="border-t border-zinc-100 px-4 pb-3 pt-3 dark:border-zinc-900">
-          <LiveCard
-            utterance={liveUtterance}
-            recording={recording}
-            showTranslation={showTranslation}
-            displayMode={displayMode}
-          />
-        </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -1184,13 +1184,13 @@ function LiveCard({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border backdrop-blur-md",
+        "relative w-full min-w-0 overflow-hidden rounded-xl border backdrop-blur-md",
         recording
           ? "border-rose-200/80 bg-gradient-to-br from-rose-50/80 via-white/85 to-rose-50/40 shadow-sm ring-1 ring-rose-200/40 dark:border-rose-900/40 dark:from-rose-950/30 dark:via-zinc-900/60 dark:to-rose-950/20 dark:ring-rose-900/30"
           : "border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
       )}
     >
-      <div className="relative z-10 space-y-2 p-4 md:p-5">
+      <div className="relative z-10 min-w-0 space-y-2 p-4 md:p-5">
         {isListening ? (
           <p className="flex items-center gap-2 py-2 text-sm text-zinc-500 dark:text-zinc-400">
             <Radio className="h-3.5 w-3.5 animate-pulse text-rose-500" />
@@ -1201,9 +1201,14 @@ function LiveCard({
             {sourceText ? (
               <div
                 ref={sourceRef}
-                className="max-h-28 overflow-y-auto overscroll-contain pr-1"
+                className="max-h-28 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain pr-1"
               >
-                <p className={cn("leading-relaxed", sourceClass)}>
+                <p
+                  className={cn(
+                    "leading-relaxed break-words",
+                    sourceClass
+                  )}
+                >
                   {sourceText}
                   {recording ? (
                     <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-rose-500 align-middle dark:bg-rose-400" />
@@ -1214,9 +1219,14 @@ function LiveCard({
             {hasTranslation ? (
               <div
                 ref={transRef}
-                className="max-h-28 overflow-y-auto overscroll-contain pr-1"
+                className="max-h-28 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain pr-1"
               >
-                <p className={cn("leading-snug", translationClass)}>
+                <p
+                  className={cn(
+                    "leading-snug break-words",
+                    translationClass
+                  )}
+                >
                   {translatedText}
                   {recording ? (
                     <span className="ml-1 animate-pulse text-zinc-400 dark:text-zinc-500">
