@@ -92,13 +92,12 @@ export function BookmarkInRecording({
         <Button
           type="button"
           variant="outline"
-          size="icon"
+          size="sm"
           disabled={disabled}
-          title="打书签"
-          aria-label="打书签"
-          className={cn("h-8 w-8", className)}
+          className={className}
         >
           <Bookmark className="h-4 w-4" />
+          <span>打书签</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80">

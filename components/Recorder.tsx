@@ -742,54 +742,14 @@ export function Recorder({
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
-          {sessionId && (
-            <BookmarkInRecording
-              sessionId={sessionId}
-              getCurrentMs={getCurrentMs}
-              disabled={!recording}
-            />
-          )}
-          <FloatingSubtitleToggle
-            items={floatingItems}
-            recording={recording}
-            showTranslation={showTranslation}
-          />
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => setLiveShareOpen(true)}
-            disabled={!sessionId}
-            title="实时分享"
-            aria-label="实时分享"
-          >
-            <Share2 className="h-4 w-4" />
-          </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={async () => {
-              const rec = recorderRef.current;
-              if (!rec) return;
-              if (state.status === "paused") {
-                await rec.resume();
-              } else if (state.status === "recording") {
-                await rec.pause();
-              }
-            }}
-            disabled={state.status !== "recording" && state.status !== "paused"}
+            onClick={() => setLiveShareOpen(true)}
+            disabled={!sessionId}
           >
-            {state.status === "paused" ? (
-              <>
-                <Play className="h-4 w-4" />
-                <span>继续</span>
-              </>
-            ) : (
-              <>
-                <Pause className="h-4 w-4" />
-                <span>暂停</span>
-              </>
-            )}
+            <Share2 className="h-4 w-4" />
+            <span>实时分享</span>
           </Button>
           <Button
             variant="destructive"
@@ -800,6 +760,50 @@ export function Recorder({
             <span>结束录制</span>
           </Button>
         </div>
+      </div>
+
+      {/* Bottom transport bar — mirrors lecsync's player-style control
+          row. Holds in-flight recording controls (bookmark, PIP, pause)
+          so the top bar stays minimal. */}
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950">
+        {sessionId && (
+          <BookmarkInRecording
+            sessionId={sessionId}
+            getCurrentMs={getCurrentMs}
+            disabled={!recording}
+          />
+        )}
+        <FloatingSubtitleToggle
+          items={floatingItems}
+          recording={recording}
+          showTranslation={showTranslation}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={async () => {
+            const rec = recorderRef.current;
+            if (!rec) return;
+            if (state.status === "paused") {
+              await rec.resume();
+            } else if (state.status === "recording") {
+              await rec.pause();
+            }
+          }}
+          disabled={state.status !== "recording" && state.status !== "paused"}
+        >
+          {state.status === "paused" ? (
+            <>
+              <Play className="h-4 w-4" />
+              <span>继续</span>
+            </>
+          ) : (
+            <>
+              <Pause className="h-4 w-4" />
+              <span>暂停</span>
+            </>
+          )}
+        </Button>
       </div>
 
       {sessionId ? (
