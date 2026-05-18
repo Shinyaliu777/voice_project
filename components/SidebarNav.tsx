@@ -16,15 +16,12 @@ import {
   Languages,
   SunMoon,
   LogOut,
-  Smartphone,
-  AppWindow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SettingsDialog } from "@/components/SettingsDialog";
-import { InviteCodeCard } from "@/components/InviteCodeCard";
 import { UserMenuBadge } from "@/components/UserMenuBadge";
 import { SidebarChatHistory } from "@/components/SidebarChatHistory";
 
@@ -160,26 +157,10 @@ export function SidebarNav({
         </ul>
       </nav>
 
-      {/* Invite reward card — sits between nav and the store badges */}
-      <InviteCodeCard />
-
-      {/* App badges */}
-      <div className="grid grid-cols-2 gap-2 px-3 pb-2">
-        <a
-          href="#"
-          className="flex items-center justify-center gap-1.5 rounded-md border border-zinc-200 px-2 py-1.5 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          <AppWindow className="h-3.5 w-3.5" />
-          iOS
-        </a>
-        <a
-          href="#"
-          className="flex items-center justify-center gap-1.5 rounded-md border border-zinc-200 px-2 py-1.5 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          <Smartphone className="h-3.5 w-3.5" />
-          Android
-        </a>
-      </div>
+      {/* Upgrade CTA — only for free-plan users. Invite-code card +
+          iOS/Android badges removed: invites are still a Wave 2.3 todo
+          and we don't have native apps. */}
+      <UpgradeCard />
 
       <Separator />
 
@@ -229,6 +210,60 @@ function isActive(pathname: string, href: string): boolean {
   // Treat any /dashboard/chat/* route as the chat section.
   if (href.startsWith("/dashboard/chat")) return pathname.startsWith("/dashboard/chat");
   return pathname === href || pathname.startsWith(href + "/");
+}
+
+interface SubscriptionResp {
+  plan?: { displayName?: string; isPremium?: boolean; monthlyMinutes?: number };
+}
+
+/**
+ * Compact upgrade card shown in the sidebar between nav and footer. Reads
+ * the current subscription; hides itself for paid users (already upgraded).
+ * Free users see a one-line CTA → /dashboard/billing.
+ */
+function UpgradeCard() {
+  const [planName, setPlanName] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/subscription");
+        if (!r.ok) return;
+        const data = (await r.json()) as SubscriptionResp;
+        if (!alive) return;
+        if (data.plan?.isPremium) {
+          setPlanName(null); // hide for premium users
+        } else {
+          setPlanName(data.plan?.displayName ?? "Free");
+        }
+      } catch {
+        /* ignore — keep card hidden if probe fails */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!planName) return null;
+
+  return (
+    <div className="mx-3 mb-2 rounded-lg border border-zinc-200 bg-gradient-to-br from-amber-50 to-orange-50 p-3 dark:border-zinc-800 dark:from-amber-950/30 dark:to-orange-950/20">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-900 dark:text-zinc-100">
+        <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+        <span>升级 Business</span>
+      </div>
+      <p className="mt-1 text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">
+        当前 {planName} · 升级后解锁无限录音、Pro 推理模型、优先支持
+      </p>
+      <Link
+        href="/dashboard/billing"
+        className="mt-2 inline-flex w-full items-center justify-center rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+      >
+        查看套餐
+      </Link>
+    </div>
+  );
 }
 
 export default SidebarNav;

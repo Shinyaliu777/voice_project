@@ -249,15 +249,16 @@ function SidebarMinutes({
   minutesStatus: "idle" | "streaming" | "error";
   onRefresh: () => void;
 }) {
+  const isEmpty = sections.length === 0;
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
+    <div className={cn("flex flex-col gap-3", isEmpty && "h-full")}>
+      <div className="flex shrink-0 items-center justify-between">
         <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
           {minutesStatus === "streaming"
             ? "正在生成纪要…"
             : minutesStatus === "error"
               ? "上次失败，请重试"
-              : sections.length === 0
+              : isEmpty
                 ? "等待第一段内容"
                 : `${sections.length} 个章节`}
         </span>
@@ -277,9 +278,19 @@ function SidebarMinutes({
           )}
         </Button>
       </div>
-      {sections.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-          录够几句话后会自动生成要点
+      {isEmpty ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-zinc-100 text-zinc-400 dark:bg-zinc-900 dark:text-zinc-600">
+            <FileText className="h-5 w-5" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              还没有要点
+            </p>
+            <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+              说够 2000 字会自动生成第一段纪要 · 也可以点上方刷新按钮立即生成
+            </p>
+          </div>
         </div>
       ) : (
         <MinutesView
