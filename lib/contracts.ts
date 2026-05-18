@@ -72,8 +72,19 @@ export interface TranslationRequest {
 }
 export interface TranslationResponse {
   translatedText: string;
-  /** Which provider actually produced this — useful for the UI badge */
-  translationSource: "chrome-local" | "gemini" | "claude" | "passthrough";
+  /**
+   * Which provider actually produced this — useful for the UI badge.
+   * "cloud" is the generic label used by the browser-side proxy when it
+   * doesn't yet know which server-side LLM answered (the actual answer
+   * still arrives as one of the concrete values).
+   */
+  translationSource:
+    | "chrome-local"
+    | "gemini"
+    | "claude"
+    | "deepseek"
+    | "cloud"
+    | "passthrough";
 }
 
 export interface TranslationProvider {

@@ -1,6 +1,6 @@
 import type { TranslationProvider } from "@/lib/contracts";
 import { passthroughProvider } from "./passthrough";
-import { geminiTranslationProvider } from "./gemini";
+import { cloudTranslationProvider } from "./cloud";
 import { chromeLocalProvider, isChromeTranslatorAvailable } from "./chrome-local";
 
 export type ServerTranslationMode = "off" | "cloud";
@@ -14,17 +14,18 @@ export function getServerTranslationProvider(
   mode: ServerTranslationMode
 ): TranslationProvider {
   if (mode === "off") return passthroughProvider;
-  return geminiTranslationProvider;
+  return cloudTranslationProvider;
 }
 
 /**
  * Thin proxy used by the browser when the user picks "cloud" translation:
  * POSTs to our own `/api/translate` route so the API key never leaves the
- * server. Reports `translationSource: "gemini"` because that is what the
- * server route uses today.
+ * server. The server route picks whichever LLM `LLM_DEFAULT_PROVIDER`
+ * points at — the response payload carries the real `translationSource`
+ * for UI badges, we just label this proxy generically.
  */
 export const cloudProxyProvider: TranslationProvider = {
-  id: "gemini",
+  id: "cloud",
   async translate(req) {
     const res = await fetch("/api/translate", {
       method: "POST",
@@ -55,7 +56,7 @@ export function getClientTranslationProvider(
 
 export {
   passthroughProvider,
-  geminiTranslationProvider,
+  cloudTranslationProvider,
   chromeLocalProvider,
   isChromeTranslatorAvailable,
 };
