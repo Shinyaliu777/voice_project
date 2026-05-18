@@ -29,6 +29,11 @@ const allowDevLogin =
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
+  // We deploy behind nginx, which forwards the original Host (e.g.
+  // voice.cyanclay.org). Without this, Auth.js v5 throws UntrustedHost on
+  // /api/auth/* in production and every server-side `auth()` call fails,
+  // cascading into UNAUTHENTICATED on dashboard/api routes.
+  trustHost: true,
   // Routes /login + /api/auth/error etc.
   pages: {
     signIn: "/login",
