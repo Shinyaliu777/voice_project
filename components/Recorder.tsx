@@ -702,7 +702,7 @@ export function Recorder({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1600px] gap-4 px-4 py-4">
+    <div className="mx-auto flex w-full max-w-[1600px] gap-4 px-4 pb-4 pt-4 min-h-[calc(100vh-3rem)]">
     <div className="flex w-full min-w-0 flex-1 flex-col gap-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
