@@ -86,14 +86,31 @@ REDIS_URL=""                               # 单实例留空即可
 UPLOAD_INTERVAL_MS=3000
 TARGET_SAMPLE_RATE=16000
 
-# ============ Phase 1 单用户 ============
+# ============ NextAuth / Auth.js v5（多用户登录）============
+AUTH_SECRET=""                             # * openssl rand -base64 32
+AUTH_URL="https://your.domain.com"         # 可选；trustHost: true 已写死在代码里
+GOOGLE_CLIENT_ID=""                        # 可选；只配了 dev-login 时无需
+GOOGLE_CLIENT_SECRET=""
+ALLOW_DEV_LOGIN=""                         # 留空 = 仅 dev 环境允许 dev-login；
+                                           # 设 "1" = 生产环境也允许（**不推荐**）
+
+# ============ Phase 1 fallback（已被 NextAuth 取代，可不填）============
 DEV_USER_EMAIL="prod@yourdomain.com"
 DEV_USER_NAME="Admin"
+ALLOW_DEV_USER_FALLBACK=""                 # 留空；设 "1" 会让未登录请求 fall
+                                           # back 到 DEV_USER_EMAIL，仅用于
+                                           # 老接口本地 smoke test
 
 # ============ Server ============
 PORT=3000
 NODE_ENV="production"
 ```
+
+> 关于 `AUTH_URL` / `trustHost`：Auth.js v5 默认要求请求里的 Host header
+> 必须匹配 `AUTH_URL`，否则抛 `UntrustedHost` 并让所有 `/api/auth/*` 404。
+> 本项目在 `auth.ts` 里直接写了 `trustHost: true`，因此 nginx 透传任意
+> `Host` 都能跑通；`AUTH_URL` 可以不填（NextAuth 会从请求自取域名）。
+> 若想更严格，再把 `AUTH_URL` 设成最终的 https 域名。
 
 ---
 
@@ -105,6 +122,7 @@ NODE_ENV="production"
 | **WebSocket** | 浏览器直连 `wss://stt-rt.soniox.com:443`，**不经过本服务**，反向代理无需特殊配置 |
 | **Server-Sent Events** | `/api/live-share/[token]`、`/api/chat`、`/api/sessions/[id]/minutes/stream` —— 反向代理**必须关 buffering**，否则字幕不实时 |
 | **上传** | `/api/audio/upload-chunk` PUT，反向代理 `client_max_body_size ≥ 50m` |
+| **Host header** | 反向代理必须把原 `Host` 透传给 Next.js（`proxy_set_header Host $host;`），否则 Auth.js v5 会把 `localhost:3000` 当成入口，回调链路全错 |
 | **出站** | Soniox + Gemini/Claude + Postgres + (可选 Redis) 全部要通 |
 
 ### Nginx 模板
@@ -354,16 +372,17 @@ tar -czf /backup/uploads-$(date +%F).tar.gz /var/lib/voice-project/uploads
 
 ---
 
-## 10. 已知限制（Phase 1）
+## 10. 已知限制
 
-⚠️ **绝不能直接公网暴露**：
-- 当前**无登录系统**，所有访问者共享 `DEV_USER_EMAIL` 这一个账号
-- 反向代理那一层加一个 HTTP Basic Auth / Cloudflare Access / Tailscale 内网，限制访问
-- Phase 2 接入 Clerk 后再开放
+✅ **登录已就绪（Phase 2 Wave 2.1）**：Google OAuth + dev-login（仅 dev/`ALLOW_DEV_LOGIN=1` 时可用）已经接入；middleware 守护 `/dashboard/*`、自动重定向 `/login`；每个 user 的录音 / 词条 / 对话已按 `user.id` 隔离。
+
+⚠️ **支付链路未完成（Wave 2.2 待办）**：Plan / Subscription schema 已落库，配额校验也跑通了（120 min/月 + 20 chat/日），但 Stripe checkout + webhook 还没接，升级 Business 目前只能由 admin 手改数据库。
 
 ⚠️ **无限流**：恶意请求会跑光 LLM/STT 配额，建议给 Soniox/Gemini key 设月度上限。
 
 ⚠️ **单实例**：本地存储不支持横向扩展（多实例文件不共享）。需要扩容时再切换到 S3 兼容存储 + 共享 Redis。
+
+⚠️ **Live-share token 永久有效**：分享出去的 `/share/live/<token>` URL 不会过期、不能撤销，泄漏 = 录音永久公开，按 API key 对待。
 
 ---
 
@@ -378,3 +397,6 @@ tar -czf /backup/uploads-$(date +%F).tar.gz /var/lib/voice-project/uploads
 | 纪要不生成 | LLM key 错 / 配额耗尽，看 `/api/sessions/[id]/minutes/stream` 返回 |
 | Prisma 连接报错 | `npx prisma db pull` 测试连通性 |
 | 重启后音频丢了 | `STORAGE_LOCAL_DIR` 不是持久化卷 |
+| `[auth][error] UntrustedHost` + 所有路由 401 / `UnauthenticatedError` | Auth.js 拒绝当前 Host。本仓库 `auth.ts` 已写 `trustHost: true`，确认部署的代码版本里包含这一行，并重启进程；老进程不会热加载 |
+| `/api/auth/session` 返回 200 但 `user: null` | `AUTH_SECRET` 改过导致旧 JWT 失效；清浏览器 cookie 重新登录即可 |
+| Google 登录回到 `/api/auth/error` | Google Console 里 OAuth 客户端的「授权重定向 URI」缺 `https://your.domain.com/api/auth/callback/google` |

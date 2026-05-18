@@ -143,7 +143,7 @@ All routes are Next.js App Router handlers under `app/api/`. Request/response sh
 
 ### Auth
 
-There's no real auth in Phase 1 — every route resolves the dev user via `getDevUserId()` (`DEV_USER_EMAIL` in `.env`). Live-share viewer is intentionally public (token in URL).
+NextAuth (Auth.js v5) — JWT session, providers `google` + `dev-login` (the latter gated on `ALLOW_DEV_LOGIN=1` outside of NODE_ENV=development). `middleware.ts` redirects unauthenticated `/dashboard/*` requests to `/login`. Routes resolve the user via `auth()`; legacy helpers (`lib/dev-user.ts`) still exist as a fallback when `ALLOW_DEV_USER_FALLBACK=1`, but Wave 2.1 replaced every prod route with `withAuth()`. Live-share viewer is intentionally public (token in URL).
 
 ### Recording / transcription
 
@@ -281,7 +281,8 @@ lib/
   prompts/              LLM prompt templates (minutes, terms, flashcards, chat)
   api/dto.ts            Prisma row → DTO converters
   db.ts                 PrismaClient singleton
-  dev-user.ts           Phase 1 fake-auth shim
+  dev-user.ts           Auth resolution + ALLOW_DEV_USER_FALLBACK legacy shim
+  quota.ts              Per-user monthly recording / daily chat limits
   contracts.ts          All TypeScript types shared by routes + browser code
 ```
 
@@ -344,14 +345,14 @@ https://your-app.vercel.app/share/live/<token>
 
 Anyone with the URL can read the live transcript over SSE — no login. Tokens are scoped to one session and cannot be revoked in Phase 1, so treat them like API keys.
 
-### Limits in Phase 1
+### Current limits
 
-> **Single-user deployment.** Every session on a freshly deployed instance still belongs to the one dev user defined by `DEV_USER_EMAIL`. There's no signup, no login, no per-user data isolation. Anyone who can reach the dashboard URL sees every session ever recorded on that deployment.
+> **Auth shipped, billing pending.** NextAuth (Google + dev-login) is live as of Phase 2 Wave 2.1 — every recording / chat / vocab row is scoped to `user.id` and `middleware.ts` blocks anonymous access to `/dashboard/*`. Plan + Subscription tables also exist and quota enforcement (120 rec-min/month, 20 chat/day on Free) is wired in.
 >
-> Multi-tenant auth (NextAuth + per-user data scoping) ships in **Phase 2 wave 2**. Until then, deploy behind a private Vercel preview / password protection if your transcripts are sensitive.
+> What's **not** done yet: Stripe checkout + webhook (Wave 2.2). Upgrading a user to Business today requires manually editing the `Subscription` row in Postgres. Invite codes + Mixpanel are Wave 2.3.
 
 ## Notes
 
 - The default LLM model IDs in `.env.example` point at Gemini Flash for cost — swap to Claude / a larger Gemini if you want better minutes / chat quality.
-- The dev user is hard-coded (`DEV_USER_EMAIL` in env). Phase 2 will add real auth.
+- `lib/dev-user.ts` still exists as an `ALLOW_DEV_USER_FALLBACK=1`-gated fallback for legacy smoke tests; production routes resolve users via `auth()`.
 - Auto-direction translation only triggers when exactly one of source/target is CJK. For JA↔ZH the configured direction is used as-is.

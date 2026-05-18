@@ -186,32 +186,33 @@ billable_web_search_calls
 
 下面四块独立，可单独完成、单独上线：
 
-### A. NextAuth 接入（**核心**, 1-2 天）
+### A. NextAuth 接入（**核心**） — ✅ 已交付（Wave 2.1）
 
-替换 `lib/dev-user.ts` 单点 hack。新增：
+实际落地比原方案精简一档：去掉了 email magic-link，留 `dev-login` Credentials provider 给本地开发。
 
-- `npm i next-auth@5 @auth/prisma-adapter`
-- `prisma/schema.prisma`：加 `Account / Session / VerificationToken` 三个 NextAuth 表
-- `app/api/auth/[...nextauth]/route.ts`：providers = `[GoogleProvider, CredentialsProvider(magic-link via email)]`
-- `auth.ts` 根级配置 + middleware
-- 把 46 条 route 里的 `getDevUserId()` 替成 `auth()`，取出 `session.user.id`
+- ✅ `next-auth@5` + `@auth/prisma-adapter` 装好
+- ✅ `prisma/schema.prisma`：加了 `Account` / `VerificationToken`（Session 走 JWT 不入库）
+- ✅ `auth.ts` 根级配置，含 `trustHost: true`（关键：nginx 转发后 Host = `voice.cyanclay.org`，Auth.js v5 默认会拒）
+- ✅ `app/api/auth/[...nextauth]/route.ts` = `handlers.GET/POST`
+- ✅ `middleware.ts` 守护 `/dashboard/*`，白名单 `/api/auth/*`、`/share/live/*`、`/login`
+- ✅ `lib/dev-user.ts` 重写为 `auth()` 优先、`ALLOW_DEV_USER_FALLBACK=1` 才回退到 dev user
+- ✅ `events.createUser` 自动建 Free Subscription
 
-env 增加：
+env 实际所需（Auth.js v5 用 `AUTH_*` 前缀；`NEXTAUTH_*` 旧名也兼容）：
 ```
-NEXTAUTH_URL=https://voice.cyanclay.org
-NEXTAUTH_SECRET=...                          # openssl rand -base64 32
+AUTH_SECRET=...                              # openssl rand -base64 32
+AUTH_URL=https://voice.cyanclay.org         # 可选，trustHost: true 已写死
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
-EMAIL_FROM=...                               # for magic-link via SES/Resend
-EMAIL_SERVER_HOST=smtp.resend.com
-EMAIL_SERVER_PORT=465
-EMAIL_SERVER_USER=...
-EMAIL_SERVER_PASSWORD=...
+ALLOW_DEV_LOGIN=                             # 留空；设 "1" 让生产环境也开 dev-login
 ```
 
-### B. Plan / Subscription 数据模型（半天）
+> magic-link / Resend SMTP 没接 —— Google OAuth + dev-login 已经够覆盖现有用户群，
+> 邀请码 + 邮件留到 Wave 2.3 一起做。
 
-照 lecsync 的结构搬：
+### B. Plan / Subscription 数据模型 — ✅ 已交付（Wave 2.1）
+
+照 lecsync 的结构搬，已在 `prisma/schema.prisma`：
 
 ```prisma
 model Plan {
@@ -259,22 +260,25 @@ enum BillingCycle      { MONTHLY YEARLY }
 
 Seed：默认创建 Free 套餐；新用户注册时 trigger 创建 ACTIVE/Free Subscription。
 
-### C. 配额系统（1 天，依赖 A+B）
+### C. 配额系统 — ✅ 已交付（Wave 2.1）
 
-- `lib/quota.ts`：`getUserUsage(userId)` 算本月录音分钟 + 今日 chat 数
-- `lib/quota.ts`：`checkQuota(userId, kind: "recording" | "chat")` 返回 `{allowed, remaining, limit}`
-- 替换 `/api/chat/quota` stub
-- 在录制 start (`/api/transcription/sessions` POST) 和 chat send (`/api/chat` POST) 入口检查
-- 超额时返回 402（Payment Required）+ UI 弹「升级套餐」对话框
+落地后接口与原方案一致：
+- `lib/quota.ts` 暴露 `getQuota(userId, "recording"|"chat")` → `{limit, used, remaining, allowed, planName}`
+- `ensureQuota()` 超额抛 `QuotaExceededError`（HTTP 402）
+- 录制入口（`/api/transcription/sessions` POST）+ chat 入口（`/api/chat` POST）都已挂
+- Recording 配额：累加当月 `Session.durationMs`；Chat 配额：当日 `ChatMessage` 行数（role=user）
+- `limit = 0` 表示 chat 无限，`limit ≥ 100_000` 表示录音无限（用于 Business）
 
-### D. Stripe checkout + webhook（2-3 天，依赖 A+B）
+### D. Stripe checkout + webhook — ⏳ 待办（Wave 2.2）
 
-- `app/api/subscription/checkout/route.ts`：创建 Stripe Checkout Session，传 `planId + cycle`
-- `app/api/stripe/webhook/route.ts`：监听 `checkout.session.completed / invoice.paid / subscription.deleted`，写 `Subscription` 表
-- 设置页加 `/dashboard/billing`：显示当前套餐 + 升级/取消按钮
-- 测试用 Stripe test mode，真上线再切 production
+数据模型已经把 `stripeSubscriptionId / stripeCustomerId` 字段都开好了，端点还没接：
 
-### E. 邀请码（半天，依赖 A+B）
+- [ ] `app/api/subscription/checkout/route.ts`：创建 Stripe Checkout Session，传 `planId + cycle`
+- [ ] `app/api/stripe/webhook/route.ts`：监听 `checkout.session.completed / invoice.paid / subscription.deleted`，写 `Subscription` 表
+- [x] `/dashboard/billing` 页：显示当前套餐 + 升级 CTA（按钮目前 disabled）
+- [ ] 测试用 Stripe test mode，真上线再切 production
+
+### E. 邀请码 — ⏳ 待办（Wave 2.3）
 
 ```prisma
 model Invitation {
@@ -305,18 +309,18 @@ model InvitationRedemption {
 
 ## 9. 推荐执行顺序
 
-**Wave 2.1** （最小可登录）：
-1. A (NextAuth, Google + Email magic-link)
-2. B (Plan/Subscription schema + seed free plan)
-3. C 子集：只做 quota 表 + 录制分钟拦截（chat 暂不限，反正没 Stripe 没人付钱）
+**Wave 2.1** （最小可登录） — ✅ 已上线：
+1. ✅ A (NextAuth, Google + dev-login；magic-link 没做)
+2. ✅ B (Plan/Subscription schema + seed Free plan)
+3. ✅ C 完整版：录制分钟 + chat 双拦截（提前实现，因为 schema 已经支持）
 
-**Wave 2.2**（开始收钱）：
-4. D (Stripe checkout + webhook)
-5. C 完整版：chat 也限流
+**Wave 2.2** （开始收钱） — ⏳ 待办：
+4. ⏳ D (Stripe checkout + webhook)
+5. ✅ C 完整版（在 2.1 一起做了）
 
-**Wave 2.3** （增长）：
-6. E (邀请码)
-7. Mixpanel 接入
+**Wave 2.3** （增长） — ⏳ 待办：
+6. ⏳ E (邀请码)
+7. ⏳ Mixpanel 接入
 
 每一 wave 推完都能上线发用户。
 
