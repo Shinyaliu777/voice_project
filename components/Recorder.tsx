@@ -715,18 +715,18 @@ export function Recorder({
         </div>
 
         {/* Hero mic button */}
-        <div className="mt-24 flex flex-col items-center gap-6">
+        <div className="mt-16 flex flex-col items-center gap-5 sm:mt-24 sm:gap-6">
           <button
             type="button"
             onClick={startRecording}
             disabled={starting}
             aria-label="开始录制"
-            className="bg-mic-gradient ring-mic-halo relative flex h-28 w-28 items-center justify-center rounded-full text-white transition-transform hover:scale-[1.03] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
+            className="bg-mic-gradient ring-mic-halo relative flex h-24 w-24 items-center justify-center rounded-full text-white transition-transform hover:scale-[1.03] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70 sm:h-28 sm:w-28 lg:h-32 lg:w-32"
           >
             {starting ? (
-              <Loader2 className="h-10 w-10 animate-spin" />
+              <Loader2 className="h-9 w-9 animate-spin sm:h-10 sm:w-10" />
             ) : (
-              <Mic className="h-10 w-10" strokeWidth={1.5} />
+              <Mic className="h-9 w-9 sm:h-10 sm:w-10" strokeWidth={1.5} />
             )}
           </button>
           <div className="flex flex-col items-center gap-2 text-center">
@@ -755,20 +755,20 @@ export function Recorder({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1600px] gap-4 px-4 pb-4 pt-4 min-h-[calc(100vh-3rem)]">
-    <div className="flex w-full min-w-0 flex-1 flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-[760px] gap-4 px-3 pb-4 pt-4 min-h-[calc(100vh-3rem)] md:max-w-[1024px] md:px-4 lg:max-w-[1280px] lg:px-6 xl:max-w-[1440px] 2xl:max-w-[1600px] 2xl:px-8">
+    <div className="flex w-full min-w-0 flex-1 flex-col gap-3 md:gap-4">
       {/* Top action bar — flat items inline, no boxed background, matching
           lecsync's recording header where state pill + buttons just live
           on the page background. */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <ConnectionPill status={state.status} />
           <LevelMeter level={state.level} />
-          <span className="font-mono text-sm tabular-nums text-zinc-600 dark:text-zinc-300">
+          <span className="font-mono text-xs tabular-nums text-zinc-600 dark:text-zinc-300 sm:text-sm">
             {formatElapsed(elapsedMs)}
           </span>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={swapLanguages}
@@ -876,7 +876,9 @@ export function Recorder({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 rounded-full"
+              // Touch-friendly on mobile (44×44 is the iOS HIG minimum,
+              // 11×4=44px), compact on desktop.
+              className="h-11 w-11 rounded-full sm:h-8 sm:w-8"
               onClick={async () => {
                 const rec = recorderRef.current;
                 if (!rec) return;

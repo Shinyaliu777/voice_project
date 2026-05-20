@@ -46,7 +46,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             <Link href="/dashboard">
               <Plus className="h-4 w-4" />
               {/* Label hides on tiny screens to free up header room. */}
-              <span className="hidden xs:inline sm:inline">新建录音</span>
+              <span className="hidden sm:inline">新建录音</span>
             </Link>
           </Button>
         </header>
