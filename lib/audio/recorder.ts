@@ -132,6 +132,16 @@ export class Recorder {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly WS_RECONNECT_BACKOFFS_MS = [500, 1500, 3000];
 
+  // ---- page visibility ----
+  // When the tab is hidden the browser throttles setInterval to ≤1 Hz, and
+  // some platforms suspend the AudioContext entirely, so PCM stops flowing
+  // to Soniox. We can't beat the throttle in the background, but we *can*
+  // recover promptly when the user comes back: resume the AudioContext if
+  // suspended, nudge the WS, and flush any pending Chrome-translator work
+  // that the setTimeout debounce missed while throttled.
+  private boundVisibilityHandler: (() => void) | null = null;
+  private boundAudioCtxStateChange: (() => void) | null = null;
+
   // ---- Chrome Translator cache ----
   // window.Translator.create() warms up an on-device model — caching the
   // instance across segments turns a 200-500ms-per-segment cold-start into a
@@ -186,6 +196,8 @@ export class Recorder {
           this.config.sourceLanguage
         );
       }
+
+      this.attachVisibilityMonitor();
 
       this.startedAtMs = performance.now();
       this.setState("connected");
@@ -289,6 +301,7 @@ export class Recorder {
       this.wsReconnectTimer = null;
     }
     this.detachDeviceMonitor();
+    this.detachVisibilityMonitor();
     try {
       this.mediaRecorder?.stop();
     } catch { /* ignore */ }
@@ -386,6 +399,85 @@ export class Recorder {
     if (this.deviceRecoveryTimer) {
       clearTimeout(this.deviceRecoveryTimer);
       this.deviceRecoveryTimer = null;
+    }
+  }
+
+  /**
+   * Listen for `visibilitychange` and AudioContext `statechange` so we can
+   * recover the moment the tab returns from background. The browser throttles
+   * setInterval to ≤ 1 Hz in hidden tabs and may suspend the AudioContext, so
+   * heartbeat + worklet PCM both pause — Soniox eventually 408s and Chrome
+   * Translator's setTimeout(350) debounce never fires. We can't fight the
+   * throttle, but we can make the resume snappy.
+   */
+  private attachVisibilityMonitor(): void {
+    if (typeof document === "undefined") return;
+    this.detachVisibilityMonitor();
+
+    this.boundVisibilityHandler = () => {
+      if (document.hidden) return;
+      void this.handleVisibilityReturn();
+    };
+    document.addEventListener("visibilitychange", this.boundVisibilityHandler);
+
+    // Also react to AudioContext state changes. Chrome will occasionally flip
+    // an AudioContext to "suspended" without an explicit visibility transition
+    // (e.g. system audio mode, focus loss); the statechange listener catches
+    // those cases too.
+    if (this.audioCtx) {
+      this.boundAudioCtxStateChange = () => {
+        if (
+          this.audioCtx?.state === "suspended" &&
+          typeof document !== "undefined" &&
+          !document.hidden &&
+          this.state !== "paused" &&
+          this.state !== "stopping" &&
+          this.state !== "ended"
+        ) {
+          this.audioCtx.resume().catch(() => {});
+        }
+      };
+      this.audioCtx.addEventListener("statechange", this.boundAudioCtxStateChange);
+    }
+  }
+
+  private detachVisibilityMonitor(): void {
+    if (typeof document !== "undefined" && this.boundVisibilityHandler) {
+      try { document.removeEventListener("visibilitychange", this.boundVisibilityHandler); } catch {}
+    }
+    this.boundVisibilityHandler = null;
+    if (this.audioCtx && this.boundAudioCtxStateChange) {
+      try { this.audioCtx.removeEventListener("statechange", this.boundAudioCtxStateChange); } catch {}
+    }
+    this.boundAudioCtxStateChange = null;
+  }
+
+  private async handleVisibilityReturn(): Promise<void> {
+    if (this.state === "stopping" || this.state === "ended" || this.state === "idle") {
+      return;
+    }
+    try {
+      if (this.audioCtx?.state === "suspended") {
+        await this.audioCtx.resume();
+      }
+      // Nudge Soniox so the WS doesn't 408 on the next inbound silence
+      // window — sending an empty binary frame is a no-op but bumps
+      // lastAudioSendAt indirectly via the WS being known-alive.
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(new ArrayBuffer(0));
+        } catch { /* ignore */ }
+      }
+      // The local-translator setTimeout was throttled while hidden, so any
+      // in-flight utterance whose source advanced during the gap never got
+      // re-translated. Re-arm the scheduler now that we're foreground.
+      for (const u of this.currentUtterances.values()) {
+        if (u.sourceFinal || u.sourcePending) {
+          this.scheduleLiveTranslate(u);
+        }
+      }
+    } catch (err) {
+      console.warn("[recorder] visibility resume failed", err);
     }
   }
 
@@ -1525,6 +1617,7 @@ export class Recorder {
 
   private async shutdownInternal(): Promise<void> {
     this.detachDeviceMonitor();
+    this.detachVisibilityMonitor();
     this.stopHeartbeat();
     if (this.finalizeTimer) {
       clearTimeout(this.finalizeTimer);
