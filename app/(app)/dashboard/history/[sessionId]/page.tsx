@@ -125,10 +125,22 @@ export default async function SessionDetailPage({
     }
   }
 
+  // Final (post-recording) minutes — written by the explicit "生成纪要"
+  // button. Higher-quality, full-pass over the entire transcript.
   const minutesSections =
     (session.minutes?.sectionsJson as MinutesSection[] | null) ?? null;
   const rawContentMd = session.minutes?.contentMd ?? "";
   const minutesContentMd = rawContentMd.trim().length > 0 ? rawContentMd : null;
+
+  // Live (incremental) minutes — written during recording by the
+  // every-2000-char auto-refresh. Captures the running narrative as
+  // it happened. Independent storage from the final fields above so
+  // the two tabs render different content.
+  const liveMinutesSections =
+    (session.minutes?.liveSectionsJson as MinutesSection[] | null) ?? null;
+  const rawLiveContentMd = session.minutes?.liveContentMd ?? "";
+  const liveMinutesContentMd =
+    rawLiveContentMd.trim().length > 0 ? rawLiveContentMd : null;
 
   return (
     <div className="mx-auto max-w-3xl px-3 py-6 sm:max-w-4xl sm:px-4 md:max-w-5xl md:px-6 md:py-8 lg:max-w-6xl lg:px-8 lg:py-10 2xl:max-w-7xl">
@@ -219,13 +231,14 @@ export default async function SessionDetailPage({
       <Tabs defaultValue="transcript" className="w-full">
         <TabsList>
           <TabsTrigger value="transcript">转录</TabsTrigger>
-          {/* "实时纪要" and "纪要" used to be two tabs that rendered the
-              SAME Minutes row in two styles — sections-with-timestamps
-              vs. raw markdown — and users (rightly) read this as a bug
-              ("俩边完全一致"). They're merged into one tab now;
-              MinutesView prefers section cards when they exist (richer
-              UI with time ranges) and falls back to the markdown
-              renderer for legacy rows that only have contentMd. */}
+          {/* Two distinct minutes paths, two tabs, two persisted blobs
+              (Minutes.liveContentMd vs Minutes.contentMd). 实时纪要 is
+              what got written during the recording itself by the
+              every-2000-char auto-refresh; 纪要 is what the user
+              explicitly generated afterwards via "生成纪要", which
+              does a full-pass over the whole transcript and is
+              usually richer / better-structured. */}
+          <TabsTrigger value="live-minutes">实时纪要</TabsTrigger>
           <TabsTrigger value="minutes">纪要</TabsTrigger>
         </TabsList>
 
@@ -240,6 +253,25 @@ export default async function SessionDetailPage({
                 segments={segments}
                 speakerNames={speakerNames}
               />
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="live-minutes">
+          {liveMinutesSections && liveMinutesSections.length > 0 ? (
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-6 dark:border-zinc-900 dark:bg-zinc-950">
+              <MinutesView
+                sections={liveMinutesSections}
+                contentMd={liveMinutesContentMd}
+              />
+            </div>
+          ) : liveMinutesContentMd ? (
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-6 dark:border-zinc-900 dark:bg-zinc-950">
+              <MinutesView contentMd={liveMinutesContentMd} />
+            </div>
+          ) : (
+            <div className="rounded-[10px] border border-zinc-100 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-900 dark:bg-zinc-950">
+              录音过程中会自动生成 — 还没有内容
             </div>
           )}
         </TabsContent>
@@ -259,7 +291,7 @@ export default async function SessionDetailPage({
           ) : (
             <div className="flex flex-col items-center gap-4 rounded-[10px] border border-zinc-100 bg-white p-10 text-center dark:border-zinc-900 dark:bg-zinc-950">
               <p className="text-sm text-zinc-500">
-                还没有生成会议纪要
+                还没有生成会议纪要 — 点击下方按钮基于完整转录重新生成
               </p>
               <GenerateMinutesButton sessionId={session.id} />
             </div>

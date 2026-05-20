@@ -221,6 +221,10 @@ export function toMinutesDTO(row: Minutes): MinutesDTO {
     sections: parseMinutesSections(row.sectionsJson),
     model: row.model ?? null,
     status: coerceMinutesStatus(row.status),
+    liveContentMd: row.liveContentMd ?? "",
+    liveSections: parseMinutesSections(row.liveSectionsJson),
+    liveModel: row.liveModel ?? null,
+    liveStatus: coerceMinutesStatus(row.liveStatus),
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   };

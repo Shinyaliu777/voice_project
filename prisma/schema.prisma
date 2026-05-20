@@ -257,10 +257,27 @@ model Bookmark {
 model Minutes {
   id           String   @id @default(cuid())
   sessionId    String   @unique
+
+  // ---- Final (post-recording) minutes ----
+  // Written by the explicit "生成纪要" button after recording stops.
+  // Runs a full pass over the entire transcript so it can produce a
+  // higher-quality, more structured summary than the live version.
   contentMd    String   @default("") @db.Text
   sectionsJson Json?
   model        String?
   status       String   @default("pending") // pending/streaming/done/error
+
+  // ---- Live (incremental) minutes ----
+  // Written during recording by the auto-refresh that fires every
+  // ~2000 new chars. Captures the running narrative of the session as
+  // it happens. Independent of the final fields above so the "纪要"
+  // tab (final) and "实时纪要" tab (live) can show genuinely
+  // different content.
+  liveContentMd    String   @default("") @db.Text
+  liveSectionsJson Json?
+  liveModel        String?
+  liveStatus       String   @default("pending") // pending/streaming/done/error
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

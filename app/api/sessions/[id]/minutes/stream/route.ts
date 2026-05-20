@@ -9,6 +9,7 @@ import {
 } from "@/lib/prompts/minutes";
 import { toSegmentDTO } from "@/lib/api/dto";
 import type {
+  IncrementalMinutesSection,
   IncrementalMinutesUpdate,
   MinutesSection,
   MinutesStreamEvent,
@@ -218,6 +219,83 @@ function extractCompleteSections(
     i = endObj + 1;
   }
   return { sections: out, newCursor: i };
+}
+
+/**
+ * Reconstruct the full live-minutes section list from the state the
+ * client just sent (confirmed + pending) plus the freshly-computed
+ * incremental update. Mirrors the merge logic in Recorder.tsx's
+ * incremental handler so the persisted DB row matches what the
+ * recording UI is rendering at this exact moment.
+ *
+ * Used by the incremental SSE path to populate the live* fields on
+ * the Minutes row.
+ */
+function buildLiveSections(
+  confirmedSections: IncrementalMinutesSection[],
+  oldPendingSection: IncrementalMinutesSection | null,
+  update: IncrementalMinutesUpdate
+): MinutesSection[] {
+  const result: MinutesSection[] = [];
+  for (const s of confirmedSections) {
+    result.push({
+      title: s.title,
+      narrative: s.narrative,
+      points: s.points,
+      timeStartMs: s.timeStartMs,
+      timeEndMs: s.timeEndMs,
+    });
+  }
+
+  const newNarrative = (update.currentTopic.newNarrative ?? "").trim();
+  const hasNarrativeDelta = newNarrative.length > 0;
+
+  if (update.topicChanged && oldPendingSection) {
+    // Lock the prior pending section into confirmed.
+    result.push({
+      title: oldPendingSection.title,
+      narrative: oldPendingSection.narrative,
+      points: oldPendingSection.points,
+      timeStartMs: oldPendingSection.timeStartMs,
+      timeEndMs: oldPendingSection.timeEndMs,
+    });
+    if (hasNarrativeDelta || update.currentTopic.newPoints.length > 0) {
+      result.push({
+        title: update.currentTopic.title || "新话题",
+        narrative: hasNarrativeDelta ? newNarrative : undefined,
+        points: hasNarrativeDelta ? [] : update.currentTopic.newPoints,
+        timeStartMs: update.currentTopic.timeStartMs,
+        timeEndMs: update.currentTopic.timeEndMs,
+      });
+    }
+  } else if (oldPendingSection) {
+    const prevNarrative = oldPendingSection.narrative ?? "";
+    const mergedNarrative = hasNarrativeDelta
+      ? prevNarrative
+        ? `${prevNarrative}\n\n${newNarrative}`
+        : newNarrative
+      : prevNarrative || undefined;
+    result.push({
+      title: update.currentTopic.title || oldPendingSection.title,
+      narrative: mergedNarrative,
+      points: hasNarrativeDelta
+        ? oldPendingSection.points
+        : [...oldPendingSection.points, ...update.currentTopic.newPoints],
+      timeStartMs:
+        oldPendingSection.timeStartMs ?? update.currentTopic.timeStartMs,
+      timeEndMs: update.currentTopic.timeEndMs ?? oldPendingSection.timeEndMs,
+    });
+  } else if (hasNarrativeDelta || update.currentTopic.newPoints.length > 0) {
+    result.push({
+      title: update.currentTopic.title || "话题 1",
+      narrative: hasNarrativeDelta ? newNarrative : undefined,
+      points: hasNarrativeDelta ? [] : update.currentTopic.newPoints,
+      timeStartMs: update.currentTopic.timeStartMs,
+      timeEndMs: update.currentTopic.timeEndMs,
+    });
+  }
+
+  return result;
 }
 
 export async function POST(
@@ -566,6 +644,42 @@ async function handleIncrementalStream(
           },
         };
         send({ type: "incremental_update", update });
+
+        // Persist the live (incremental) minutes view to the DB.
+        // Without this, navigating away from the recording page lost
+        // every section — and worse, the "实时纪要" tab on the session
+        // detail page had no data to show that was distinct from the
+        // post-recording "纪要" tab. We rebuild the full live section
+        // list from the client-provided confirmed + pending + the
+        // freshly-computed delta, then write it to the live* fields
+        // so the two tabs render independent content.
+        const liveSections = buildLiveSections(
+          body.confirmedSections,
+          body.pendingSection ?? null,
+          update
+        );
+        const liveContentMd = composeContentMd(liveSections, "");
+        try {
+          await prisma.minutes.upsert({
+            where: { sessionId: session.id },
+            create: {
+              sessionId: session.id,
+              liveContentMd,
+              liveSectionsJson: liveSections as unknown as object,
+              liveModel: incrementalModel,
+              liveStatus: "done",
+            },
+            update: {
+              liveContentMd,
+              liveSectionsJson: liveSections as unknown as object,
+              liveModel: incrementalModel,
+              liveStatus: "done",
+            },
+          });
+        } catch {
+          // Persisting the live view is best-effort — never block the
+          // SSE response on it. The client UI still has the update.
+        }
       } catch (err) {
         send({
           type: "error",

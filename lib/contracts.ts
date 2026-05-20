@@ -205,10 +205,20 @@ export interface MinutesSection {
 export interface MinutesDTO {
   id: string;
   sessionId: string;
+  /** Final minutes — produced by the explicit "生成纪要" button after
+   *  recording stops, full-pass over the entire transcript. Higher
+   *  quality than the live version. */
   contentMd: string;
   sections: MinutesSection[] | null;
   model: string | null;
   status: "pending" | "streaming" | "done" | "error";
+  /** Live (incremental) minutes — written during recording by the
+   *  auto-refresh that fires every ~2000 chars. Independent from the
+   *  final fields above so the two tabs can show different content. */
+  liveContentMd: string;
+  liveSections: MinutesSection[] | null;
+  liveModel: string | null;
+  liveStatus: "pending" | "streaming" | "done" | "error";
   createdAt: string;
   updatedAt: string;
 }
