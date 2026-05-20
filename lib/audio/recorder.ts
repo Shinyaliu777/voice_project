@@ -1128,20 +1128,49 @@ export class Recorder {
 
   /**
    * Fire-and-forget push to the live-share channel. We deliberately do not
-   * await; transcript propagation must not block the recording pipeline. Push
-   * failures surface as a recoverable error but otherwise do nothing.
+   * await — transcript propagation must not block the recording pipeline.
+   *
+   * Adds one retry after 200ms for transient failures (network blip,
+   * temporary 5xx). Without retry, viewers reported "漏字 / 少句子" because
+   * a single dropped push for a final utterance permanently disappeared
+   * from the viewer's stream. Viewer-side segment polling
+   * (/api/live-share/[token]/segments) is the second line of defence.
+   *
+   * Treats non-2xx responses as failures too (the old version only caught
+   * fetch() throwing, so a 502 from nginx silently swallowed the payload).
    */
   private pushLiveShare(payload: object): void {
     const token = this.config.liveShareToken;
     if (!token) return;
-    void fetch(`/api/live-share/${encodeURIComponent(token)}/push`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      keepalive: true,
-    }).catch((err) => {
-      this.emitError(err, "live_share_push_failed", true);
-    });
+    const url = `/api/live-share/${encodeURIComponent(token)}/push`;
+    const body = JSON.stringify(payload);
+    const attempt = async (retriesLeft: number): Promise<void> => {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          keepalive: true,
+        });
+        if (res.ok) return;
+        // 4xx is permanent (bad token, etc.) — don't retry.
+        if (res.status >= 400 && res.status < 500) {
+          throw new Error(`push rejected (${res.status})`);
+        }
+        if (retriesLeft > 0) {
+          await new Promise((r) => setTimeout(r, 200));
+          return attempt(retriesLeft - 1);
+        }
+        throw new Error(`push failed after retry (${res.status})`);
+      } catch (err) {
+        if (retriesLeft > 0) {
+          await new Promise((r) => setTimeout(r, 200));
+          return attempt(retriesLeft - 1);
+        }
+        this.emitError(err, "live_share_push_failed", true);
+      }
+    };
+    void attempt(1);
   }
 
   // ---- batched POST of finalized utterances as segments ----

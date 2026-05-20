@@ -534,6 +534,44 @@ export function LiveShareViewer({
     return () => clearInterval(id);
   }, []);
 
+  // -------- segment reconciliation poll --------
+  // SSE is best-effort: the host's push is fire-and-forget (now with 1
+  // retry, but still), nginx may briefly drop chunks, and broadcaster is
+  // in-memory in single-instance deploys (events fired while no viewer
+  // was subscribed are lost). Reconcile against the persisted DB every
+  // 30 s to recover any utterance the viewer missed. This is read-only
+  // and cheap (segments are paginated by index in DB).
+  React.useEffect(() => {
+    let cancelled = false;
+    const reconcile = async () => {
+      try {
+        const res = await fetch(
+          `/api/live-share/${encodeURIComponent(token)}/segments`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const json = (await res.json()) as { items?: SegmentDTO[] };
+        if (cancelled || !Array.isArray(json.items)) return;
+        // Replay each segment through the existing reducer; it dedupes
+        // by (speaker, startMs) tolerance window so already-known
+        // segments are no-ops.
+        for (const seg of json.items) {
+          dispatch({ type: "segment", value: seg });
+        }
+      } catch {
+        /* network blip — try again on next tick */
+      }
+    };
+    // First reconcile on a slight delay so SSE joined event lands first.
+    const initial = setTimeout(reconcile, 3000);
+    const id = setInterval(reconcile, 30_000);
+    return () => {
+      cancelled = true;
+      clearTimeout(initial);
+      clearInterval(id);
+    };
+  }, [token]);
+
   // -------- viewer-side re-translation --------
   // When the viewer changes language OR re-enables follow-host: wipe
   // per-card viewer translations so the host's translation is shown
