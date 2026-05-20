@@ -341,6 +341,35 @@ export class Recorder {
     await recorderStopped.catch(() => undefined);
     await this.chunkUploadQueue.catch(() => undefined);
 
+    // 3a. Re-upload any chunks still pending in IndexedDB.
+    //
+    // Without this, a single failed chunk-record POST (network blip)
+    // would leave that chunk in IDB with uploaded=false. The DB row
+    // for it never gets written, so when finalize runs server-side
+    // it concatenates only the chunks that DID land — producing
+    // audio shorter than the transcript. That's the "录音和转录不一致"
+    // failure mode lecsync's triggerMerge guards against by waiting
+    // for `getPendingChunks().length === 0` before calling finalize.
+    const allUploaded = await this.flushPendingChunksFromCache(
+      this.config.sessionId
+    );
+    if (!allUploaded) {
+      // Bail without finalize. Session stays in "uploading" status;
+      // boot-time recovery in RecorderLane will retry on the next
+      // page load and the user can re-trigger finalize from the
+      // detail page's "完成上传" button.
+      this.emitError(
+        new Error(
+          "部分音频块未能上传，已保留供下次自动恢复。请稍后从历史记录页的「完成上传」按钮重试。"
+        ),
+        "finalize_deferred_pending_chunks",
+        true
+      );
+      await this.shutdownInternal();
+      this.setState("ended");
+      return;
+    }
+
     const totalDurationMs = this.computeDurationMs();
     let finalizeOk = false;
     try {
@@ -1795,6 +1824,61 @@ export class Recorder {
     //    the meantime we leave that one alone.
     if (this.lastInFlightChunk?.chunkIndex === chunkIndex) {
       this.lastInFlightChunk = null;
+    }
+  }
+
+  /**
+   * Drain any IndexedDB rows still marked uploaded=false for this
+   * session by re-POSTing them through the single-shot multipart
+   * endpoint (same path sendBeacon + boot-time recovery use — server
+   * upserts on (sessionId, chunkIndex) so retrying a chunk that
+   * partially succeeded is harmless).
+   *
+   * Returns true iff IDB is empty (or only contains already-uploaded
+   * rows) after the drain. The caller uses that as a precondition for
+   * /api/audio/finalize — finalizing while chunks are still pending
+   * is what produced shorter-than-transcript audio in the past.
+   */
+  private async flushPendingChunksFromCache(
+    sessionId: string
+  ): Promise<boolean> {
+    const cache = getAudioLocalCache();
+    let pending;
+    try {
+      pending = await cache.getPendingChunks(sessionId);
+    } catch {
+      // IDB inaccessible — best-effort assume nothing to flush. Server
+      // will finalize with whatever chunk-record rows it has.
+      return true;
+    }
+    if (pending.length === 0) return true;
+    for (const row of pending) {
+      try {
+        const fd = new FormData();
+        fd.append("sessionId", row.sessionId);
+        fd.append("chunkIndex", String(row.chunkIndex));
+        fd.append("durationSeconds", String((row.durationMs ?? 0) / 1000));
+        fd.append("contentType", row.contentType);
+        fd.append("file", row.blob, `chunk-${row.chunkIndex}.webm`);
+        const resp = await fetch("/api/audio/upload-chunk", {
+          method: "POST",
+          body: fd,
+        });
+        if (resp.ok) {
+          await cache.markUploaded(sessionId, row.chunkIndex).catch(() => {});
+        }
+      } catch {
+        // Network blip — leave this row pending; the next iteration
+        // (or next session's boot recovery) will retry.
+      }
+    }
+    // Re-check — if any still pending, the upload failed for real and
+    // we can't finalize safely.
+    try {
+      const stillPending = await cache.getPendingChunks(sessionId);
+      return stillPending.length === 0;
+    } catch {
+      return true;
     }
   }
 

@@ -39,6 +39,7 @@ import type {
   WorkletInboundMessage,
 } from "./types";
 import { transcriptionEventBus } from "./event-bus";
+import { getAudioLocalCache } from "./local-cache";
 import {
   TranslationQueue,
   makeTranslationJobId,
@@ -310,6 +311,27 @@ export class TranscriptionService {
 
     await recorderStopped.catch(() => undefined);
 
+    // Drain IndexedDB pending chunks before finalize. Without this, a
+    // failed chunk-record POST mid-recording leaves the chunk in IDB
+    // with uploaded=false but no DB row — finalize then concatenates
+    // only the chunks that landed, producing audio shorter than the
+    // transcript. Matches lecsync's triggerMerge guard.
+    const allUploaded = await this.flushPendingChunksFromCache(
+      this.config.sessionId
+    );
+    if (!allUploaded) {
+      this.emitError(
+        new Error(
+          "部分音频块未能上传，已保留供下次自动恢复。请稍后从历史记录页的「完成上传」按钮重试。"
+        ),
+        "finalize_deferred_pending_chunks",
+        true
+      );
+      await this.shutdownInternal();
+      this.setState("ended");
+      return;
+    }
+
     // Persistence plugin owns the post-stop /api/audio/finalize call now.
     // Service only tears down media + WS here.
     const totalDurationMs = this.computeDurationMs();
@@ -335,6 +357,46 @@ export class TranscriptionService {
 
     await this.shutdownInternal();
     this.setState("ended");
+  }
+
+  /** See lib/audio/recorder.ts for the rationale. Duplicated here so
+   *  the service post-cutover has the same finalize precondition. */
+  private async flushPendingChunksFromCache(
+    sessionId: string
+  ): Promise<boolean> {
+    const cache = getAudioLocalCache();
+    let pending;
+    try {
+      pending = await cache.getPendingChunks(sessionId);
+    } catch {
+      return true;
+    }
+    if (pending.length === 0) return true;
+    for (const row of pending) {
+      try {
+        const fd = new FormData();
+        fd.append("sessionId", row.sessionId);
+        fd.append("chunkIndex", String(row.chunkIndex));
+        fd.append("durationSeconds", String((row.durationMs ?? 0) / 1000));
+        fd.append("contentType", row.contentType);
+        fd.append("file", row.blob, `chunk-${row.chunkIndex}.webm`);
+        const resp = await fetch("/api/audio/upload-chunk", {
+          method: "POST",
+          body: fd,
+        });
+        if (resp.ok) {
+          await cache.markUploaded(sessionId, row.chunkIndex).catch(() => {});
+        }
+      } catch {
+        /* network blip — leave row pending */
+      }
+    }
+    try {
+      const stillPending = await cache.getPendingChunks(sessionId);
+      return stillPending.length === 0;
+    } catch {
+      return true;
+    }
   }
 
   /** Attach (or clear) a live-share token mid-recording. */
