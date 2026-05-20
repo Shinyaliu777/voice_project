@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { prisma } from "@/lib/db";
 import { requireUserId } from "@/lib/dev-user";
-import { getQuota } from "@/lib/quota";
+import { getQuota, getRecordingBreakdown } from "@/lib/quota";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -61,7 +61,7 @@ function fmtChat(n: number): string {
 export default async function BillingPage() {
   const userId = await requireUserId();
 
-  const [plans, sub, recording, chat] = await Promise.all([
+  const [plans, sub, recording, chat, breakdown] = await Promise.all([
     prisma.plan.findMany({
       where: { isActive: true },
       orderBy: [{ monthlyPriceCents: "asc" }, { name: "asc" }],
@@ -72,6 +72,7 @@ export default async function BillingPage() {
     }),
     getQuota(userId, "recording"),
     getQuota(userId, "chat"),
+    getRecordingBreakdown(userId),
   ]);
 
   const currentPlanId =
@@ -122,6 +123,75 @@ export default async function BillingPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Audit table — exposes the per-session math behind the bar so
+          users can verify "本月录音" themselves. Native <details> so
+          it stays server-rendered and zero-JS; click to expand. */}
+      {breakdown.length > 0 ? (
+        <details className="mb-8 rounded-lg border border-zinc-200 bg-white open:shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <summary className="cursor-pointer select-none rounded-lg px-4 py-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800">
+            本期用量明细（{breakdown.length} 个录音 · 合计 {breakdown
+              .reduce((a, b) => a + b.minutes, 0)
+              .toFixed(2)} 分钟）
+          </summary>
+          <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+            <table className="w-full text-xs">
+              <thead className="text-left text-[11px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                <tr>
+                  <th className="pb-2 font-medium">录音</th>
+                  <th className="pb-2 font-medium">状态</th>
+                  <th className="pb-2 text-right font-medium">分钟</th>
+                  <th className="pb-2 pl-3 font-medium">来源</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breakdown.map((c) => (
+                  <tr
+                    key={c.sessionId}
+                    className="border-t border-zinc-100 dark:border-zinc-800"
+                  >
+                    <td className="py-2 pr-3">
+                      <Link
+                        href={`/dashboard/history/${c.sessionId}`}
+                        className="text-zinc-700 hover:underline dark:text-zinc-200"
+                      >
+                        {c.title || "未命名录音"}
+                      </Link>
+                      <div className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                        {c.createdAt.toLocaleString("zh-CN", {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 text-zinc-500 dark:text-zinc-400">
+                      {c.status}
+                    </td>
+                    <td className="py-2 pr-3 text-right font-mono tabular-nums text-zinc-700 dark:text-zinc-200">
+                      {c.minutes.toFixed(2)}
+                    </td>
+                    <td className="py-2 pl-3 text-zinc-400 dark:text-zinc-500">
+                      {c.source === "segments"
+                        ? "实际转录"
+                        : c.source === "durationMs"
+                          ? "录音时长"
+                          : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-3 text-[11px] text-zinc-400 dark:text-zinc-500">
+              「来源 · 实际转录」= 取 Soniox 报告的最后转录时间点；
+              「录音时长」= 用录音 finalize 时记录的时长 fallback；
+              「—」= 该 session 没有任何转录段也没 finalize（贡献 0）。
+            </p>
+          </div>
+        </details>
+      ) : null}
 
       {/* Plans */}
       <h2 className="mb-3 text-base font-medium text-zinc-700 dark:text-zinc-200">

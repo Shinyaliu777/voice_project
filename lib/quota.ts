@@ -164,6 +164,67 @@ export async function getQuota(
 }
 
 /**
+ * Per-session breakdown of how this month's recording minutes were
+ * spent. Used by the billing page's audit table so users can verify
+ * the number on their own. Mirrors getRecordingMinutesUsedThisMonth's
+ * accounting exactly — sum of breakdown[i].minutes equals (modulo
+ * sub-minute rounding) what we report as `used` on the bar.
+ */
+export interface RecordingContribution {
+  sessionId: string;
+  title: string;
+  createdAt: Date;
+  status: string;
+  /** Minutes this session adds to the monthly bill, rounded to 0.01. */
+  minutes: number;
+  /** Where the duration came from — helps explain inconsistencies. */
+  source: "segments" | "durationMs" | "none";
+}
+
+export async function getRecordingBreakdown(
+  userId: string
+): Promise<RecordingContribution[]> {
+  const since = startOfCurrentMonth();
+  const sessions = await prisma.session.findMany({
+    where: { userId, createdAt: { gte: since } },
+    select: {
+      id: true,
+      title: true,
+      createdAt: true,
+      status: true,
+      durationMs: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (sessions.length === 0) return [];
+
+  const maxEnds = await prisma.segment.groupBy({
+    by: ["sessionId"],
+    where: { sessionId: { in: sessions.map((s) => s.id) } },
+    _max: { audioEndMs: true },
+  });
+  const maxEndMap = new Map<string, number>();
+  for (const r of maxEnds) maxEndMap.set(r.sessionId, r._max.audioEndMs ?? 0);
+
+  return sessions.map((s) => {
+    const segMax = maxEndMap.get(s.id) ?? 0;
+    const dur = s.durationMs ?? 0;
+    const contributionMs = Math.max(segMax, dur);
+    let source: RecordingContribution["source"] = "none";
+    if (segMax >= dur && segMax > 0) source = "segments";
+    else if (dur > 0) source = "durationMs";
+    return {
+      sessionId: s.id,
+      title: s.title,
+      createdAt: s.createdAt,
+      status: s.status,
+      minutes: Math.round((contributionMs / 60_000) * 100) / 100,
+      source,
+    };
+  });
+}
+
+/**
  * Convenience: throws a tagged error if over quota; route handlers catch
  * and return 402 Payment Required + plan info so the client can show an
  * "upgrade" dialog.
