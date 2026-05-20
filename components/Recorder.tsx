@@ -8,6 +8,7 @@ import {
   ArrowLeftRight,
   Loader2,
   Mic,
+  MoreHorizontal,
   Pause,
   Play,
   Radio,
@@ -19,8 +20,11 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -769,11 +773,13 @@ export function Recorder({
           </span>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+          {/* Secondary controls — hidden on mobile, collapsed into the
+              "more" menu below. Desktop (sm+) shows them inline. */}
           <button
             type="button"
             onClick={swapLanguages}
             aria-label="对调显示方向"
-            className="inline-flex items-center gap-1 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="hidden items-center gap-1 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900 sm:inline-flex"
           >
             <span className="font-mono">{sourceLang.toUpperCase()}</span>
             <ArrowLeftRight className="h-3 w-3" />
@@ -781,7 +787,7 @@ export function Recorder({
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" className="hidden sm:inline-flex">
                 <ArrowDownUp className="h-4 w-4" />
                 <span>{DISPLAY_MODE_LABEL[displayMode]}</span>
               </Button>
@@ -802,17 +808,59 @@ export function Recorder({
             size="sm"
             onClick={() => setLiveShareOpen(true)}
             disabled={!sessionId}
+            className="hidden sm:inline-flex"
           >
             <Share2 className="h-4 w-4" />
             <span>实时分享</span>
           </Button>
+
+          {/* Mobile-only "more" menu — collapses the three secondary
+              controls into one dropdown so the action bar fits on a
+              375px phone without wrapping into three rows. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="更多操作"
+                className="h-9 w-9 p-0 sm:hidden"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onSelect={swapLanguages}>
+                <ArrowLeftRight className="mr-2 h-4 w-4" />
+                对调方向（{sourceLang.toUpperCase()} ↔ {targetLang.toUpperCase()}）
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>显示模式</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={displayMode}
+                onValueChange={(v) => setDisplayMode(v as DisplayMode)}
+              >
+                <DropdownMenuRadioItem value="balanced">平衡</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="source-emphasis">原文优先</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="translation-emphasis">译文优先</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={() => setLiveShareOpen(true)}
+                disabled={!sessionId}
+              >
+                <Share2 className="mr-2 h-4 w-4" />
+                实时分享
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <Button
             variant="destructive"
             size="sm"
             onClick={() => setStopConfirmOpen(true)}
           >
             <Square className="h-4 w-4" />
-            <span>结束录制</span>
+            <span className="hidden sm:inline">结束录制</span>
           </Button>
         </div>
       </div>

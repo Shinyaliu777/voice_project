@@ -34,7 +34,11 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-zinc-200 bg-white p-6 shadow-lg rounded-lg dark:border-zinc-800 dark:bg-zinc-950 data-[state=open]:animate-in data-[state=closed]:animate-out",
+        // Phone: snap to 92vw (slight peek + safe insets) with tighter
+        // p-4 padding. sm+ desktop sizes restore the 24px breathing
+        // room. max-w-lg is the default ceiling — callers like
+        // SettingsDialog override via className.
+        "fixed left-[50%] top-[50%] z-50 grid w-[92vw] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-zinc-200 bg-white p-4 shadow-lg rounded-lg dark:border-zinc-800 dark:bg-zinc-950 data-[state=open]:animate-in data-[state=closed]:animate-out sm:w-full sm:p-6",
         className
       )}
       {...props}

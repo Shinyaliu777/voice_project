@@ -146,7 +146,10 @@ export function SettingsDialog({
   return (
     <Dialog open={isOpen} onOpenChange={setOpen}>
       {children}
-      <DialogContent className="max-w-2xl">
+      {/* On phones cap height to 85vh and let the inner tabs scroll —
+          on a 667px iPhone there's not enough vertical room for the
+          4-tab settings panel otherwise. */}
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>设置</DialogTitle>
           <DialogDescription>个性化你的录音、翻译与通知体验</DialogDescription>

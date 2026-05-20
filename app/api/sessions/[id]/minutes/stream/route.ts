@@ -275,6 +275,9 @@ export async function POST(
   });
 
   const llm = getLLMProvider();
+  // Minutes benefit from a stronger reasoning model — see note in
+  // generate/route.ts. Same env override applies here.
+  const minutesModel = process.env.LLM_MINUTES_MODEL || "deepseek-v4-pro";
 
   const enc = new TextEncoder();
   const stream = new ReadableStream({
@@ -308,9 +311,10 @@ export async function POST(
 
       try {
         for await (const delta of llm.stream(messages, {
+          model: minutesModel,
           responseFormat: "json",
-          // Narrative prose is denser than bullets — bump the budget.
-          maxTokens: 16384,
+          // DeepSeek caps max_tokens at 8192 regardless of model.
+          maxTokens: 8192,
         })) {
           if (!delta) continue;
           buffer += delta;
@@ -461,6 +465,10 @@ async function handleIncrementalStream(
   });
 
   const llm = getLLMProvider();
+  // Incremental updates are tiny per-call, but they fire every few
+  // seconds during live recording. Use the same minutes model as the
+  // full-regeneration path so the narrative voice stays consistent.
+  const incrementalModel = process.env.LLM_MINUTES_MODEL || "deepseek-v4-pro";
   const enc = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -473,6 +481,7 @@ async function handleIncrementalStream(
         // partial-JSON parsing complicates the consumer. Latency hit is
         // negligible (~200-500ms) vs the simplicity gained.
         const raw = await llm.generate(messages, {
+          model: incrementalModel,
           responseFormat: "json",
           maxTokens: 1024,
         });

@@ -126,13 +126,21 @@ export async function POST(
   });
 
   const llm = getLLMProvider();
+  // Minutes benefit from a stronger reasoning model — DeepSeek v4-pro
+  // produces dramatically better section structure + narrative quality
+  // than v4-flash for the same prompt. Respect LLM_MINUTES_MODEL env if
+  // set; otherwise default to v4-pro for this task only (chat / translate
+  // / etc. still use whatever the default provider picks).
+  const minutesModel = process.env.LLM_MINUTES_MODEL || "deepseek-v4-pro";
   let raw: string;
   try {
     raw = await llm.generate(messages, {
+      model: minutesModel,
       responseFormat: "json",
-      // Narrative prose is denser than bullets, so bump the budget. ~16k
-      // tokens leaves plenty of room for 8 sections × 400 chars + summary.
-      maxTokens: 16384,
+      // DeepSeek caps max_tokens at 8192 regardless of model; anything
+      // higher is silently clamped. 8192 ≈ 12-16k Chinese chars, enough
+      // for 8 narrative sections + summary.
+      maxTokens: 8192,
     });
   } catch (err) {
     return NextResponse.json(
