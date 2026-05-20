@@ -89,11 +89,28 @@ export function MinutesView({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
-                  {section.points.map((p, i) => (
-                    <li key={i}>{p}</li>
-                  ))}
-                </ul>
+                {section.narrative && section.narrative.trim() ? (
+                  // New shape: render the narrative as paragraph(s). Split on
+                  // double newlines so the LLM's paragraph breaks survive.
+                  <div className="space-y-2 text-sm leading-relaxed text-zinc-700 dark:text-zinc-200">
+                    {section.narrative
+                      .trim()
+                      .split(/\n{2,}/)
+                      .filter((p) => p.trim().length > 0)
+                      .map((p, i) => (
+                        <p key={i} className="whitespace-pre-wrap">
+                          {p.trim()}
+                        </p>
+                      ))}
+                  </div>
+                ) : section.points.length > 0 ? (
+                  // Legacy fallback: pre-narrative rows persisted as bullets.
+                  <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
+                    {section.points.map((p, i) => (
+                      <li key={i}>{p}</li>
+                    ))}
+                  </ul>
+                ) : null}
               </CardContent>
             </Card>
           );

@@ -449,6 +449,7 @@ export function Recorder({
             mode: "incremental",
             confirmedSections: confirmedSections.map((s) => ({
               title: s.title,
+              narrative: s.narrative,
               points: s.points,
               timeStartMs: s.timeStartMs,
               timeEndMs: s.timeEndMs,
@@ -456,6 +457,7 @@ export function Recorder({
             pendingSection: pendingSection
               ? {
                   title: pendingSection.title,
+                  narrative: pendingSection.narrative,
                   points: pendingSection.points,
                   timeStartMs: pendingSection.timeStartMs,
                   timeEndMs: pendingSection.timeEndMs,
@@ -494,20 +496,35 @@ export function Recorder({
               // a network error doesn't drop transcripts.
               for (const id of justSentIds) sent.add(id);
 
+              // New shape prefers `newNarrative` (prose increment). Old
+              // bullet shape (`newPoints`) is kept as a fallback so a stale
+              // server still works.
+              const newNarrative = (currentTopic.newNarrative ?? "").trim();
+              const hasNarrativeDelta = newNarrative.length > 0;
+
               if (topicChanged && pendingSection) {
                 // Lock the prior pending section into confirmed, start fresh.
                 setConfirmedSections((prev) => [...prev, pendingSection]);
                 setPendingSection({
                   title: currentTopic.title || "新话题",
-                  points: currentTopic.newPoints,
+                  narrative: hasNarrativeDelta ? newNarrative : undefined,
+                  points: hasNarrativeDelta ? [] : currentTopic.newPoints,
                   timeStartMs: currentTopic.timeStartMs,
                   timeEndMs: currentTopic.timeEndMs,
                 });
               } else if (pendingSection) {
-                // Append new points to the existing pending section.
+                // Append new prose to the running narrative — paragraph break
+                // between updates so the LLM's incremental drafts stay readable.
+                const prevNarrative = pendingSection.narrative ?? "";
+                const mergedNarrative = hasNarrativeDelta
+                  ? (prevNarrative ? `${prevNarrative}\n\n${newNarrative}` : newNarrative)
+                  : prevNarrative || undefined;
                 setPendingSection({
                   title: currentTopic.title || pendingSection.title,
-                  points: [...pendingSection.points, ...currentTopic.newPoints],
+                  narrative: mergedNarrative,
+                  points: hasNarrativeDelta
+                    ? pendingSection.points
+                    : [...pendingSection.points, ...currentTopic.newPoints],
                   timeStartMs: pendingSection.timeStartMs ?? currentTopic.timeStartMs,
                   timeEndMs: currentTopic.timeEndMs ?? pendingSection.timeEndMs,
                 });
@@ -515,7 +532,8 @@ export function Recorder({
                 // First refresh of the session — open a pending section.
                 setPendingSection({
                   title: currentTopic.title || "话题 1",
-                  points: currentTopic.newPoints,
+                  narrative: hasNarrativeDelta ? newNarrative : undefined,
+                  points: hasNarrativeDelta ? [] : currentTopic.newPoints,
                   timeStartMs: currentTopic.timeStartMs ?? Math.max(0, Date.now() - startedAt),
                   timeEndMs: currentTopic.timeEndMs,
                 });

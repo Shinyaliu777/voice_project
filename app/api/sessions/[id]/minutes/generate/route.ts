@@ -21,7 +21,11 @@ function composeContentMd(
   const parts: string[] = [];
   for (const s of sections) {
     parts.push(`## ${s.title || "Untitled"}`);
-    if (Array.isArray(s.points)) {
+    // Prefer narrative prose; fall back to legacy bullet points so rows
+    // persisted before the narrative refactor still render cleanly.
+    if (s.narrative && s.narrative.trim()) {
+      parts.push(s.narrative.trim());
+    } else if (Array.isArray(s.points) && s.points.length > 0) {
       for (const p of s.points) {
         parts.push(`- ${p}`);
       }
@@ -66,10 +70,12 @@ function safeParseSections(raw: string): {
         if (!s || typeof s !== "object") continue;
         const sec = s as Record<string, unknown>;
         const title = typeof sec.title === "string" ? sec.title : "";
+        const narrative =
+          typeof sec.narrative === "string" ? sec.narrative : undefined;
         const points = Array.isArray(sec.points)
           ? sec.points.filter((p): p is string => typeof p === "string")
           : [];
-        const out: MinutesSection = { title, points };
+        const out: MinutesSection = { title, narrative, points };
         if (typeof sec.timeStartMs === "number")
           out.timeStartMs = sec.timeStartMs;
         if (typeof sec.timeEndMs === "number")
@@ -124,7 +130,9 @@ export async function POST(
   try {
     raw = await llm.generate(messages, {
       responseFormat: "json",
-      maxTokens: 8192,
+      // Narrative prose is denser than bullets, so bump the budget. ~16k
+      // tokens leaves plenty of room for 8 sections × 400 chars + summary.
+      maxTokens: 16384,
     });
   } catch (err) {
     return NextResponse.json(

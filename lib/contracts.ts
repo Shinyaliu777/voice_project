@@ -191,6 +191,15 @@ export interface MinutesSection {
   title: string;
   timeStartMs?: number;
   timeEndMs?: number;
+  /**
+   * Narrative paragraph(s) for this section. Preferred over `points` —
+   * minutes should read like prose, not a bullet list. Renderers and
+   * markdown composers fall back to `points` when narrative is absent
+   * (older `sectionsJson` rows in DB still use the bullet shape).
+   */
+  narrative?: string;
+  /** @deprecated Prefer `narrative`. Kept for backwards compat with rows
+   *  persisted before the narrative-style refactor. */
   points: string[];
 }
 export interface MinutesDTO {
@@ -380,6 +389,9 @@ export interface GenerateMinutesBody {
  */
 export interface IncrementalMinutesSection {
   title: string;
+  /** Narrative prose for this section. Preferred over `points`. */
+  narrative?: string;
+  /** @deprecated bullet form, kept for backwards compat with old clients. */
   points: string[];
   /** ms since recording start, optional */
   timeStartMs?: number;
@@ -407,6 +419,11 @@ export interface IncrementalMinutesUpdate {
   topicChanged: boolean;
   currentTopic: {
     title: string;
+    /** Prose increment to append to the pending section's narrative. Preferred
+     *  over `newPoints` — clients should concatenate this onto the running
+     *  narrative. Falls back to `newPoints` joined as bullets if absent. */
+    newNarrative?: string;
+    /** @deprecated Prefer `newNarrative`. Old clients still emit bullets. */
     newPoints: string[];
     timeStartMs?: number;
     timeEndMs?: number;

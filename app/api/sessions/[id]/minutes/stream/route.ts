@@ -23,7 +23,10 @@ const GenerateMinutesBodySchema = z
 
 const IncrementalSectionSchema = z.object({
   title: z.string(),
-  points: z.array(z.string()),
+  // narrative is the new preferred shape; points is legacy fallback for
+  // older clients still posting bullet arrays.
+  narrative: z.string().optional(),
+  points: z.array(z.string()).default([]),
   timeStartMs: z.number().optional(),
   timeEndMs: z.number().optional(),
 });
@@ -48,7 +51,11 @@ function composeContentMd(
   const parts: string[] = [];
   for (const s of sections) {
     parts.push(`## ${s.title || "Untitled"}`);
-    if (Array.isArray(s.points)) {
+    // Prefer narrative prose; fall back to legacy bullets for rows
+    // persisted before the narrative refactor.
+    if (s.narrative && s.narrative.trim()) {
+      parts.push(s.narrative.trim());
+    } else if (Array.isArray(s.points) && s.points.length > 0) {
       for (const p of s.points) {
         parts.push(`- ${p}`);
       }
@@ -98,6 +105,8 @@ function tryParseFullJson(
           if (!s || typeof s !== "object") return null;
           const sec = s as Record<string, unknown>;
           const title = typeof sec.title === "string" ? sec.title : "";
+          const narrative =
+            typeof sec.narrative === "string" ? sec.narrative : undefined;
           const points = Array.isArray(sec.points)
             ? sec.points.filter((p): p is string => typeof p === "string")
             : [];
@@ -105,7 +114,7 @@ function tryParseFullJson(
             typeof sec.timeStartMs === "number" ? sec.timeStartMs : undefined;
           const timeEndMs =
             typeof sec.timeEndMs === "number" ? sec.timeEndMs : undefined;
-          return { title, points, timeStartMs, timeEndMs };
+          return { title, narrative, points, timeStartMs, timeEndMs };
         })
         .filter((x): x is MinutesSection => x !== null)
     : [];
@@ -185,6 +194,10 @@ function extractCompleteSections(
       const parsedObj = JSON.parse(objStr) as Record<string, unknown>;
       const title =
         typeof parsedObj.title === "string" ? parsedObj.title : "";
+      const narrative =
+        typeof parsedObj.narrative === "string"
+          ? parsedObj.narrative
+          : undefined;
       const points = Array.isArray(parsedObj.points)
         ? (parsedObj.points as unknown[]).filter(
             (p): p is string => typeof p === "string"
@@ -198,7 +211,7 @@ function extractCompleteSections(
         typeof parsedObj.timeEndMs === "number"
           ? parsedObj.timeEndMs
           : undefined;
-      out.push({ title, points, timeStartMs, timeEndMs });
+      out.push({ title, narrative, points, timeStartMs, timeEndMs });
     } catch {
       // skip malformed
     }
@@ -296,7 +309,8 @@ export async function POST(
       try {
         for await (const delta of llm.stream(messages, {
           responseFormat: "json",
-          maxTokens: 8192,
+          // Narrative prose is denser than bullets — bump the budget.
+          maxTokens: 16384,
         })) {
           if (!delta) continue;
           buffer += delta;
@@ -415,7 +429,11 @@ async function handleIncrementalStream(
       start(controller) {
         const noop: IncrementalMinutesUpdate = {
           topicChanged: false,
-          currentTopic: { title: body.pendingSection?.title ?? "", newPoints: [] },
+          currentTopic: {
+            title: body.pendingSection?.title ?? "",
+            newNarrative: "",
+            newPoints: [],
+          },
         };
         controller.enqueue(
           enc.encode(
@@ -479,6 +497,11 @@ async function handleIncrementalStream(
           topicChanged: Boolean(obj.topicChanged),
           currentTopic: {
             title: typeof ct.title === "string" ? ct.title : "",
+            newNarrative:
+              typeof ct.newNarrative === "string" ? ct.newNarrative : undefined,
+            // Legacy: keep newPoints around so old clients that haven't
+            // upgraded yet still receive some content. New prompt asks for
+            // newNarrative, so this is usually empty.
             newPoints: Array.isArray(ct.newPoints)
               ? (ct.newPoints as unknown[]).filter(
                   (p): p is string => typeof p === "string"
