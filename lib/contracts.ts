@@ -547,11 +547,17 @@ export type RecorderState =
   | "ended"
   | "error";
 
-export type AudioSource = "microphone" | "system";
+export type AudioSource = "microphone" | "system" | "file";
 export type TranslationMode = "off" | "local" | "cloud";
 
 export interface RecorderConfig {
   audioSource: AudioSource;
+  /** Required when audioSource === "file". The browser plays this back
+   *  through an off-DOM <audio> element + captureStream() so the same
+   *  AudioWorklet + Soniox WebSocket path used for live mic recording
+   *  receives PCM frames as if the file were a real-time input. Plays
+   *  at 1x — a 10-minute audio file takes 10 minutes to fully transcribe. */
+  audioFile?: File;
   sourceLanguage: string;
   targetLanguage: string;
   translationMode: TranslationMode;

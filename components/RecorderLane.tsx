@@ -4,6 +4,7 @@ import * as React from "react";
 import { usePathname } from "next/navigation";
 
 import { Recorder } from "@/components/Recorder";
+import { getAudioLocalCache } from "@/lib/audio/local-cache";
 import { cn } from "@/lib/utils";
 
 interface RecorderLaneProps {
@@ -111,6 +112,66 @@ export function RecorderLane({
         }
       } catch {
         /* ignore — defaults already applied */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Boot-time IndexedDB recovery.
+  //
+  // If a previous recording exited via tab close or browser crash, the
+  // Recorder will have persisted any in-flight chunk to IndexedDB
+  // BEFORE attempting the network upload (lib/audio/recorder.ts
+  // ondataavailable handler). The pagehide sendBeacon is a best-effort
+  // fast path; this loop is the durable backup.
+  //
+  // For every chunk that wasn't marked uploaded, replay it through the
+  // single-shot POST /api/audio/upload-chunk (same path sendBeacon
+  // uses), then flip uploaded=true on success. Failed retries stay in
+  // IndexedDB for the next session. cleanupOldChunks GC's rows that
+  // succeeded long ago.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const cache = getAudioLocalCache();
+      // Sweep uploaded+old rows first so the pending list is small.
+      void cache.cleanupOldChunks().catch(() => {});
+
+      let pending: Awaited<ReturnType<typeof cache.getAllPendingChunks>>;
+      try {
+        pending = await cache.getAllPendingChunks();
+      } catch {
+        return;
+      }
+      if (cancelled || pending.length === 0) return;
+
+      for (const row of pending) {
+        if (cancelled) return;
+        try {
+          const fd = new FormData();
+          fd.append("sessionId", row.sessionId);
+          fd.append("chunkIndex", String(row.chunkIndex));
+          fd.append(
+            "durationSeconds",
+            String((row.durationMs ?? 0) / 1000)
+          );
+          fd.append("contentType", row.contentType);
+          fd.append("file", row.blob, `chunk-${row.chunkIndex}.webm`);
+          const resp = await fetch("/api/audio/upload-chunk", {
+            method: "POST",
+            body: fd,
+          });
+          if (resp.ok) {
+            await cache
+              .markUploaded(row.sessionId, row.chunkIndex)
+              .catch(() => {});
+          }
+        } catch {
+          // Network unavailable, server 500, etc. Keep the row for
+          // the next mount; better to retry than to lose audio.
+        }
       }
     })();
     return () => {

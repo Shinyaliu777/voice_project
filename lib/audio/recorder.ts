@@ -25,6 +25,7 @@ import type {
   UtteranceBuilder,
   WorkletInboundMessage,
 } from "./types";
+import { getAudioLocalCache } from "./local-cache";
 
 // -------- Chrome Translator API shape (lib/translation/chrome-local.ts owns the global) --------
 
@@ -114,6 +115,19 @@ export class Recorder {
   private lastChunkAtMs: number | null = null;
   /** Queue of blobs awaiting upload; processed serially so we don't reorder. */
   private chunkUploadQueue: Promise<void> = Promise.resolve();
+  /** Most recent chunk emitted by MediaRecorder. Held in memory so the
+   *  pagehide handler can sendBeacon it during tab unload — IndexedDB is
+   *  the durable backup, sendBeacon is the fast best-effort path while
+   *  the page still has process state. Cleared after a chunk uploads
+   *  successfully through the normal pipeline. */
+  private lastInFlightChunk: {
+    chunkIndex: number;
+    blob: Blob;
+    durationSeconds: number;
+    contentType: string;
+  } | null = null;
+  /** Bound pagehide listener; kept so we can remove it on shutdown. */
+  private boundPageHideHandler: (() => void) | null = null;
 
   // ---- device disconnect / recovery ----
   /** Bound listener attached to the audio track's "ended" event. */
@@ -155,6 +169,14 @@ export class Recorder {
     Array<{ u: UtteranceBuilder; awaitingSince: number }>
   > = new Map();
   private readonly AWAIT_TRANS_GRACE_MS = 3000;
+
+  // ---- file-mode audio source ----
+  // When audioSource === "file", these hold the off-DOM <audio>
+  // element we play the user's uploaded file through and the blob URL
+  // we created for it. Both are cleaned up in shutdownInternal so the
+  // browser doesn't leak the file's bytes after the session ends.
+  private fileAudioEl: HTMLAudioElement | null = null;
+  private fileAudioObjectUrl: string | null = null;
 
   // ---- page visibility ----
   // When the tab is hidden the browser throttles setInterval to ≤1 Hz, and
@@ -222,6 +244,25 @@ export class Recorder {
       }
 
       this.attachVisibilityMonitor();
+      this.attachPageHideMonitor();
+
+      // File mode: kick off playback so captureStream starts emitting
+      // frames. Must happen AFTER buildAudioGraph + openSonioxWs so we
+      // don't lose the first second to setup latency.
+      if (this.config.audioSource === "file" && this.fileAudioEl) {
+        try {
+          await this.fileAudioEl.play();
+        } catch (err) {
+          // Autoplay can be blocked if the page hasn't received a user
+          // gesture yet — but the file-pick click IS a user gesture, so
+          // this should never trigger in practice. Surface if it does.
+          throw new Error(
+            err instanceof Error
+              ? `音频文件播放失败：${err.message}`
+              : "音频文件播放失败"
+          );
+        }
+      }
 
       this.startedAtMs = performance.now();
       this.setState("connected");
@@ -297,8 +338,9 @@ export class Recorder {
     await this.chunkUploadQueue.catch(() => undefined);
 
     const totalDurationMs = this.computeDurationMs();
+    let finalizeOk = false;
     try {
-      await fetch("/api/audio/finalize", {
+      const resp = await fetch("/api/audio/finalize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -306,8 +348,18 @@ export class Recorder {
           totalDurationMs,
         }),
       });
+      finalizeOk = resp.ok;
     } catch (err) {
       this.emitError(err, "finalize_failed", true);
+    }
+
+    // Only drop the IndexedDB rows if the server confirmed finalize.
+    // If finalize failed, keep them so the next session boot can retry
+    // any chunks that didn't make it.
+    if (finalizeOk) {
+      void getAudioLocalCache()
+        .clearSession(this.config.sessionId)
+        .catch(() => {});
     }
 
     await this.shutdownInternal();
@@ -336,6 +388,7 @@ export class Recorder {
     }
     this.detachDeviceMonitor();
     this.detachVisibilityMonitor();
+    this.detachPageHideMonitor();
     try {
       this.mediaRecorder?.stop();
     } catch { /* ignore */ }
@@ -368,6 +421,70 @@ export class Recorder {
   // ==========================================================================
 
   private async acquireStream(): Promise<void> {
+    if (this.config.audioSource === "file") {
+      if (!this.config.audioFile) {
+        throw new Error(
+          "audioSource=file but no audioFile in RecorderConfig"
+        );
+      }
+      // Play the file through an off-DOM <audio> element and tap its
+      // output stream. Same MediaStream interface as getUserMedia /
+      // getDisplayMedia so every downstream path (worklet, level meter,
+      // MediaRecorder chunk upload, Soniox WS) works without changes.
+      const url = URL.createObjectURL(this.config.audioFile);
+      const audioEl = document.createElement("audio");
+      audioEl.src = url;
+      // Some browsers require crossOrigin to be set BEFORE src for
+      // captureStream to be allowed; blob URLs are same-origin so this
+      // is defensive.
+      audioEl.crossOrigin = "anonymous";
+      audioEl.preload = "auto";
+      // Wait for metadata so captureStream gives us a stream with the
+      // correct sample rate / channel count. Without this captureStream
+      // can return a track that never emits frames.
+      await new Promise<void>((resolve, reject) => {
+        const onReady = () => {
+          audioEl.removeEventListener("loadedmetadata", onReady);
+          audioEl.removeEventListener("error", onError);
+          resolve();
+        };
+        const onError = () => {
+          audioEl.removeEventListener("loadedmetadata", onReady);
+          audioEl.removeEventListener("error", onError);
+          reject(new Error("无法读取音频文件 — 格式可能不被支持"));
+        };
+        audioEl.addEventListener("loadedmetadata", onReady, { once: true });
+        audioEl.addEventListener("error", onError, { once: true });
+        audioEl.load();
+      });
+      const stream = (
+        audioEl as HTMLMediaElement & { captureStream?: () => MediaStream }
+      ).captureStream?.();
+      if (!stream) {
+        URL.revokeObjectURL(url);
+        throw new Error(
+          "当前浏览器不支持 audio.captureStream() — 请用 Chrome / Firefox"
+        );
+      }
+      this.stream = stream;
+      this.fileAudioEl = audioEl;
+      this.fileAudioObjectUrl = url;
+      // When playback finishes, stop the recording session automatically
+      // so the user doesn't have to click "结束录制" themselves.
+      audioEl.addEventListener(
+        "ended",
+        () => {
+          if (this.state === "recording" || this.state === "paused") {
+            void this.stop();
+          }
+        },
+        { once: true }
+      );
+      // Don't attach device monitor — the audio element doesn't fire
+      // "ended" on the track for the same reasons a real mic does.
+      return;
+    }
+
     if (this.config.audioSource === "system") {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         audio: true,
@@ -484,6 +601,50 @@ export class Recorder {
       try { this.audioCtx.removeEventListener("statechange", this.boundAudioCtxStateChange); } catch {}
     }
     this.boundAudioCtxStateChange = null;
+  }
+
+  /**
+   * Best-effort flush of the most recent in-flight chunk during tab
+   * unload. The normal upload pipeline (presign → PUT → chunk-record)
+   * is three round-trips and won't survive a closing page, so we use
+   * `navigator.sendBeacon` to POST the chunk bytes + metadata to a
+   * single-shot endpoint. IndexedDB still has the chunk too — if the
+   * beacon fails, boot-time recovery on the next session load picks
+   * up the slack.
+   *
+   * `pagehide` is the right event (`beforeunload` is unreliable on
+   * mobile + restricts beacons; `unload` doesn't fire on
+   * back-forward-cache restore). Triggered on tab close, navigation,
+   * and crash-recovery transitions.
+   */
+  private attachPageHideMonitor(): void {
+    if (typeof window === "undefined") return;
+    this.detachPageHideMonitor();
+    this.boundPageHideHandler = () => {
+      const chunk = this.lastInFlightChunk;
+      if (!chunk) return;
+      try {
+        const fd = new FormData();
+        fd.append("sessionId", this.config.sessionId);
+        fd.append("chunkIndex", String(chunk.chunkIndex));
+        fd.append("durationSeconds", String(chunk.durationSeconds));
+        fd.append("contentType", chunk.contentType);
+        fd.append("file", chunk.blob, `chunk-${chunk.chunkIndex}.webm`);
+        navigator.sendBeacon?.("/api/audio/upload-chunk", fd);
+      } catch {
+        /* sendBeacon throws on payload-too-large (≥64KB on some
+         * browsers, ≥1MB on others) — IndexedDB has the chunk, so
+         * the next-session recovery still saves us. */
+      }
+    };
+    window.addEventListener("pagehide", this.boundPageHideHandler);
+  }
+
+  private detachPageHideMonitor(): void {
+    if (typeof window !== "undefined" && this.boundPageHideHandler) {
+      try { window.removeEventListener("pagehide", this.boundPageHideHandler); } catch {}
+    }
+    this.boundPageHideHandler = null;
   }
 
   private async handleVisibilityReturn(): Promise<void> {
@@ -1490,7 +1651,6 @@ export class Recorder {
     recorder.ondataavailable = (ev) => {
       if (!ev.data || ev.data.size === 0) return;
       const blob = ev.data;
-      // Each blob is one chunk; queue serially so we keep ordering.
       const idx = this.chunkIndex++;
       const prevAt = this.lastChunkAtMs;
       const nowMs = performance.now();
@@ -1499,6 +1659,35 @@ export class Recorder {
         prevAt === null
           ? (this.config.uploadIntervalMs ?? DEFAULT_UPLOAD_INTERVAL_MS) / 1000
           : Math.max(0, (nowMs - prevAt) / 1000);
+      const durationMs = Math.round(elapsedSec * 1000);
+      const contentType = blob.type || this.mediaMime;
+      // ---- Durability: persist to IndexedDB BEFORE the network ----
+      // If the tab closes / browser crashes between this fire and the
+      // PUT/POST completing, the chunk is still on disk locally and
+      // boot-time recovery (next session load) will retry the upload.
+      // sendBeacon (pagehide handler below) is the secondary safety
+      // net for in-memory chunks that haven't been written here yet.
+      void getAudioLocalCache()
+        .storeChunk(
+          this.config.sessionId,
+          idx,
+          blob,
+          durationMs,
+          contentType
+        )
+        .catch(() => {
+          // Disk pressure / private-browsing IndexedDB denial — best
+          // effort, fall through to the network-only path.
+        });
+      // Track the most recent in-flight chunk so the pagehide handler
+      // can sendBeacon it if the tab is closing.
+      this.lastInFlightChunk = {
+        chunkIndex: idx,
+        blob,
+        durationSeconds: elapsedSec,
+        contentType,
+      };
+      // Each blob is one chunk; queue serially so we keep ordering.
       this.chunkUploadQueue = this.chunkUploadQueue.then(() =>
         this.uploadChunk(idx, blob, elapsedSec).catch((err) => {
           this.emitError(err, "chunk_upload_failed", true);
@@ -1578,6 +1767,20 @@ export class Recorder {
       publicUrl,
       storageKey,
     });
+
+    // 4. Flip the IndexedDB row to uploaded so boot-time recovery skips
+    //    it. Best-effort — if IndexedDB is unavailable we just retry
+    //    next session, which the server will dedupe by chunkIndex.
+    void getAudioLocalCache()
+      .markUploaded(this.config.sessionId, chunkIndex)
+      .catch(() => {});
+
+    // 5. Drop the in-memory reference for sendBeacon — the chunk is
+    //    durably on the server. If a newer chunk has been buffered in
+    //    the meantime we leave that one alone.
+    if (this.lastInFlightChunk?.chunkIndex === chunkIndex) {
+      this.lastInFlightChunk = null;
+    }
   }
 
   private async fetchJsonWithRetry(
@@ -1822,6 +2025,7 @@ export class Recorder {
   private async shutdownInternal(): Promise<void> {
     this.detachDeviceMonitor();
     this.detachVisibilityMonitor();
+    this.detachPageHideMonitor();
     this.stopHeartbeat();
     if (this.finalizeTimer) {
       clearTimeout(this.finalizeTimer);
