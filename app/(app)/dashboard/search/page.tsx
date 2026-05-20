@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
-import { displaySessionTitle } from "@/components/SessionCard";
+import { displaySessionTitle } from "@/lib/session-display";
 
 interface SearchPageProps {
   searchParams: Promise<{ q?: string }>;

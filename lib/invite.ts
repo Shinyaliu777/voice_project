@@ -1,22 +1,22 @@
 /**
- * Server-only referral-code primitives.
+ * Referral-code primitives.
  *
  * Registration is always open. A signup may carry an optional referral
  * code (via URL `?invite=` or the field on /login) that we use only to
  * attribute the new user back to whoever shared the code — never as a
  * gate. The same code can be reused indefinitely.
  *
- * ⚠️ This module imports `node:crypto`. NEVER import it from a client
- * component — webpack will fail with `UnhandledSchemeError`. Client
- * components should import from `@/lib/invite-format` (which has the
- * parse/format helpers without the crypto dependency); we re-export
- * them here as a convenience for server code that wants everything
- * in one place.
+ * Random bytes come from the Web Crypto API (`crypto.getRandomValues`)
+ * rather than `node:crypto.randomBytes` so this module is safe to
+ * import from middleware / Edge Runtime contexts — `auth.ts` is
+ * pulled into the middleware bundle and `node:` schemes are forbidden
+ * there.
  */
 
-import { randomBytes } from "node:crypto";
-
-export { parseInviteCodeInput, formatInviteCodeForDisplay } from "./invite-format";
+export {
+  parseInviteCodeInput,
+  formatInviteCodeForDisplay,
+} from "./invite-format";
 
 // I/l/1, O/0 removed so users typing a code never have to puzzle over
 // "did you mean Il?".
@@ -24,9 +24,9 @@ const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DEFAULT_LENGTH = 10;
 
 export function generateInviteCode(length = DEFAULT_LENGTH): string {
-  // Reject-sampling via randomBytes — bias-free, no need for full
-  // crypto.randomInt loops.
-  const bytes = randomBytes(length * 2);
+  // Reject-sampling via Web Crypto — bias-free, edge-runtime-safe.
+  const bytes = new Uint8Array(length * 2);
+  crypto.getRandomValues(bytes);
   let out = "";
   for (let i = 0; out.length < length && i < bytes.length; i++) {
     const b = bytes[i];

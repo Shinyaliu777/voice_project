@@ -4,7 +4,7 @@ import { ArrowLeft, Bookmark as BookmarkIcon, MessageSquare } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { AudioPlayer } from "@/components/AudioPlayer";
 import { FinalizeAudioButton } from "@/components/FinalizeAudioButton";
-import { displaySessionTitle } from "@/components/SessionCard";
+import { displaySessionTitle } from "@/lib/session-display";
 import { TranscriptView } from "@/components/TranscriptView";
 import { MinutesView } from "@/components/MinutesView";
 import { GenerateMinutesButton } from "@/components/GenerateMinutesButton";
