@@ -58,9 +58,14 @@ export function MobileSidebar({ userName, userInitial }: MobileSidebarProps) {
           )}
           aria-label="主导航"
         >
-          {/* Hide the visually-empty title from screen readers but still
-              announce the dialog purpose. */}
+          {/* Both Title and Description are required by Radix Dialog
+              a11y rules; missing either logs a console warning on every
+              open. Visually hidden via sr-only since the drawer is
+              self-explanatory. */}
           <DialogPrimitive.Title className="sr-only">主导航</DialogPrimitive.Title>
+          <DialogPrimitive.Description className="sr-only">
+            访问录音、对话、词汇本、套餐和设置等页面
+          </DialogPrimitive.Description>
           <DialogPrimitive.Close
             aria-label="关闭侧边栏"
             className="absolute right-3 top-3 rounded-md p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
