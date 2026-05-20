@@ -54,55 +54,65 @@ async function resolvePlanForUser(userId: string) {
 
 /**
  * Minutes of recording consumed by this user in the current calendar
- * month. Includes BOTH finalized sessions and any in-flight session's
- * uploaded chunks, so a user can't dodge their quota by simply never
- * pressing "结束录制" — every 3-second chunk that's already on disk
- * counts as consumed time.
+ * month.
  *
- * Two sources, additive (they don't overlap because Session.durationMs
- * is null until /api/audio/finalize sets it):
- *   1. Session.durationMs  for sessions where finalize completed.
- *   2. sum(AudioChunk.durationMs)  for sessions still in progress.
+ * Per-session duration: max(Segment.audioEndMs, Session.durationMs ?? 0).
  *
- * Time window is Session.createdAt so a recording started in May and
- * finalized in June consistently counts as "May usage" — picking the
- * earlier of the two timestamps avoids double-counting around month
- * boundaries.
+ * Why this is the right ground truth:
+ *
+ *   Session.durationMs is set client-side by /api/audio/finalize using
+ *   `performance.now() - startedAtMs - pausedTime`. That clock resets
+ *   on page reload, on the Bug #8 layout-hoist remount, on WS
+ *   reconnects, etc. — and Session.durationMs is only WRITTEN once at
+ *   finalize, so any of those events makes it under-count. Users that
+ *   close the tab without pressing "结束录制" don't write it at all.
+ *
+ *   Segment.audioEndMs comes from Soniox's audio-stream timestamps:
+ *   they're absolute offsets from the start of audio sent to the WS,
+ *   not wall-clock. They survive page reloads, reconnects, and "user
+ *   never clicked stop". Taking max(audioEndMs) gives the furthest
+ *   point in the recording timeline that actually got transcribed —
+ *   the truest definition of "minutes consumed".
+ *
+ *   Falling back to Session.durationMs only when no segments exist
+ *   keeps an edge case covered: a session where audio uploaded but
+ *   Soniox WS produced no segments (network drop early, all-silence,
+ *   etc.). Those are rare; without the fallback we'd under-count them.
+ *
+ * Time window is Session.createdAt — a session straddling a month
+ * boundary counts toward the month it STARTED in. updatedAt would
+ * have shifted on retranscribe / segment edits which is the wrong
+ * billing semantics.
  */
 async function getRecordingMinutesUsedThisMonth(userId: string): Promise<number> {
   const since = startOfCurrentMonth();
 
-  // 1. Finalized sessions — durationMs is authoritative.
-  const finalized = await prisma.session.findMany({
-    where: {
-      userId,
-      durationMs: { not: null },
-      createdAt: { gte: since },
-    },
-    select: { durationMs: true },
+  const sessions = await prisma.session.findMany({
+    where: { userId, createdAt: { gte: since } },
+    select: { id: true, durationMs: true },
   });
-  let totalMs = finalized.reduce((acc, r) => acc + (r.durationMs ?? 0), 0);
+  if (sessions.length === 0) return 0;
 
-  // 2. In-flight sessions — sum the chunks that have already landed.
-  //    Without this branch, an unstopped recording costs 0 quota until
-  //    the user clicks "结束录制" (which they might never do — auto
-  //    save on tab close goes to status=idle with durationMs still null
-  //    too). The user reported "本月录音这个数肯定不准" and this is
-  //    almost certainly why.
-  const inflight = await prisma.session.findMany({
-    where: {
-      userId,
-      durationMs: null,
-      createdAt: { gte: since },
-    },
-    select: { id: true },
+  // One round-trip to pull max(audioEndMs) for every session in this
+  // month — avoids N+1 queries across sessions.
+  const maxEndsBySession = await prisma.segment.groupBy({
+    by: ["sessionId"],
+    where: { sessionId: { in: sessions.map((s) => s.id) } },
+    _max: { audioEndMs: true },
   });
-  if (inflight.length > 0) {
-    const chunkAgg = await prisma.audioChunk.aggregate({
-      where: { sessionId: { in: inflight.map((s) => s.id) } },
-      _sum: { durationMs: true },
-    });
-    totalMs += chunkAgg._sum.durationMs ?? 0;
+  const maxEndMap = new Map<string, number>();
+  for (const row of maxEndsBySession) {
+    maxEndMap.set(row.sessionId, row._max.audioEndMs ?? 0);
+  }
+
+  let totalMs = 0;
+  for (const s of sessions) {
+    const segMax = maxEndMap.get(s.id) ?? 0;
+    const dur = s.durationMs ?? 0;
+    // max() handles the rare case where segments exist for only part
+    // of the recording (Soniox reconnect mid-session etc.) — we want
+    // the furthest point either signal reached.
+    totalMs += Math.max(segMax, dur);
   }
 
   return Math.round(totalMs / 60_000);
