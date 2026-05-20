@@ -174,10 +174,10 @@ export default async function BillingPage() {
                       {c.minutes.toFixed(2)}
                     </td>
                     <td className="py-2 pl-3 text-zinc-400 dark:text-zinc-500">
-                      {c.source === "segments"
-                        ? "实际转录"
-                        : c.source === "durationMs"
-                          ? "录音时长"
+                      {c.source === "durationMs"
+                        ? "录音时长"
+                        : c.source === "chunks"
+                          ? "音频块累计"
                           : "—"}
                     </td>
                   </tr>
@@ -185,9 +185,10 @@ export default async function BillingPage() {
               </tbody>
             </table>
             <p className="mt-3 text-[11px] text-zinc-400 dark:text-zinc-500">
-              「来源 · 实际转录」= 取 Soniox 报告的最后转录时间点；
-              「录音时长」= 用录音 finalize 时记录的时长 fallback；
-              「—」= 该 session 没有任何转录段也没 finalize（贡献 0）。
+              用量按录音的墙钟时长算，包含沉默 ——「录音时长」= finalize 时
+              客户端记录的真实录音时长；「音频块累计」= 未 finalize 的录音，
+              用已上传的 3 秒一个音频块累计而成；「—」= 该 session 没真录到
+              任何内容（贡献 0 分钟）。
             </p>
           </div>
         </details>

@@ -54,65 +54,69 @@ async function resolvePlanForUser(userId: string) {
 
 /**
  * Minutes of recording consumed by this user in the current calendar
- * month.
+ * month. The unit is wall-clock recording time — "开始录音到停止录音"
+ * — regardless of whether the speaker was talking or silent. This
+ * matches the user's stated policy: "本来就是只要开录音就算时间啊，
+ * 用不说不说话和我们没关系". Soniox bills us by audio seconds the same
+ * way, so this is what we have to bill the user by.
  *
- * Per-session duration: max(Segment.audioEndMs, Session.durationMs ?? 0).
+ * Important: do NOT use Segment.audioEndMs here. That's the position
+ * of the last TRANSCRIBED token from Soniox, and silent stretches
+ * don't produce segments, so audioEndMs stops advancing when the
+ * speaker pauses. A 30-minute recording with 20 minutes of silence
+ * looks like a 10-minute recording from segments alone. Wrong cost.
  *
- * Why this is the right ground truth:
+ * Two sources, additive (they don't overlap because Session.durationMs
+ * goes null → non-null exactly once at finalize):
  *
- *   Session.durationMs is set client-side by /api/audio/finalize using
- *   `performance.now() - startedAtMs - pausedTime`. That clock resets
- *   on page reload, on the Bug #8 layout-hoist remount, on WS
- *   reconnects, etc. — and Session.durationMs is only WRITTEN once at
- *   finalize, so any of those events makes it under-count. Users that
- *   close the tab without pressing "结束录制" don't write it at all.
+ *   1. Session.durationMs  for sessions where finalize completed.
+ *      The client computed this as `performance.now() - startedAtMs
+ *      - pausedTime` so it's true wall-clock minus pause time.
  *
- *   Segment.audioEndMs comes from Soniox's audio-stream timestamps:
- *   they're absolute offsets from the start of audio sent to the WS,
- *   not wall-clock. They survive page reloads, reconnects, and "user
- *   never clicked stop". Taking max(audioEndMs) gives the furthest
- *   point in the recording timeline that actually got transcribed —
- *   the truest definition of "minutes consumed".
+ *   2. sum(AudioChunk.durationMs)  for sessions still in progress.
+ *      MediaRecorder produces a chunk every ~3s of WALL CLOCK time
+ *      while the recorder is running. Sum tracks the active recording
+ *      duration including silence.
  *
- *   Falling back to Session.durationMs only when no segments exist
- *   keeps an edge case covered: a session where audio uploaded but
- *   Soniox WS produced no segments (network drop early, all-silence,
- *   etc.). Those are rare; without the fallback we'd under-count them.
+ * No status filter is needed: idle sessions that never actually
+ * started recording (mic denied, user cancelled) have zero chunks
+ * and zero durationMs, so they contribute zero automatically. Sessions
+ * with chunks but status=idle are billed too — chunks exist only
+ * because MediaRecorder actually ran, regardless of what the status
+ * field says, and the user did consume capture resources.
  *
- * Time window is Session.createdAt — a session straddling a month
- * boundary counts toward the month it STARTED in. updatedAt would
- * have shifted on retranscribe / segment edits which is the wrong
- * billing semantics.
+ * Time window is Session.createdAt — a session that started in May
+ * counts toward May even if it finalized in June.
  */
 async function getRecordingMinutesUsedThisMonth(userId: string): Promise<number> {
   const since = startOfCurrentMonth();
 
-  const sessions = await prisma.session.findMany({
-    where: { userId, createdAt: { gte: since } },
-    select: { id: true, durationMs: true },
+  // 1. Finalized sessions — durationMs is the wall-clock recording time.
+  const finalized = await prisma.session.findMany({
+    where: {
+      userId,
+      durationMs: { not: null },
+      createdAt: { gte: since },
+    },
+    select: { durationMs: true },
   });
-  if (sessions.length === 0) return 0;
+  let totalMs = finalized.reduce((acc, r) => acc + (r.durationMs ?? 0), 0);
 
-  // One round-trip to pull max(audioEndMs) for every session in this
-  // month — avoids N+1 queries across sessions.
-  const maxEndsBySession = await prisma.segment.groupBy({
-    by: ["sessionId"],
-    where: { sessionId: { in: sessions.map((s) => s.id) } },
-    _max: { audioEndMs: true },
+  // 2. Sessions not yet finalized — sum the chunks that actually landed.
+  const inflight = await prisma.session.findMany({
+    where: {
+      userId,
+      durationMs: null,
+      createdAt: { gte: since },
+    },
+    select: { id: true },
   });
-  const maxEndMap = new Map<string, number>();
-  for (const row of maxEndsBySession) {
-    maxEndMap.set(row.sessionId, row._max.audioEndMs ?? 0);
-  }
-
-  let totalMs = 0;
-  for (const s of sessions) {
-    const segMax = maxEndMap.get(s.id) ?? 0;
-    const dur = s.durationMs ?? 0;
-    // max() handles the rare case where segments exist for only part
-    // of the recording (Soniox reconnect mid-session etc.) — we want
-    // the furthest point either signal reached.
-    totalMs += Math.max(segMax, dur);
+  if (inflight.length > 0) {
+    const chunkAgg = await prisma.audioChunk.aggregate({
+      where: { sessionId: { in: inflight.map((s) => s.id) } },
+      _sum: { durationMs: true },
+    });
+    totalMs += chunkAgg._sum.durationMs ?? 0;
   }
 
   return Math.round(totalMs / 60_000);
@@ -178,7 +182,7 @@ export interface RecordingContribution {
   /** Minutes this session adds to the monthly bill, rounded to 0.01. */
   minutes: number;
   /** Where the duration came from — helps explain inconsistencies. */
-  source: "segments" | "durationMs" | "none";
+  source: "chunks" | "durationMs" | "none";
 }
 
 export async function getRecordingBreakdown(
@@ -198,21 +202,37 @@ export async function getRecordingBreakdown(
   });
   if (sessions.length === 0) return [];
 
-  const maxEnds = await prisma.segment.groupBy({
-    by: ["sessionId"],
-    where: { sessionId: { in: sessions.map((s) => s.id) } },
-    _max: { audioEndMs: true },
-  });
-  const maxEndMap = new Map<string, number>();
-  for (const r of maxEnds) maxEndMap.set(r.sessionId, r._max.audioEndMs ?? 0);
+  // For sessions that haven't been finalized we sum AudioChunk.durationMs;
+  // that's MediaRecorder's wall-clock output (including silence) and
+  // matches what getRecordingMinutesUsedThisMonth bills.
+  const inflightIds = sessions
+    .filter((s) => s.durationMs == null)
+    .map((s) => s.id);
+  const chunkMap = new Map<string, number>();
+  if (inflightIds.length > 0) {
+    const chunkSums = await prisma.audioChunk.groupBy({
+      by: ["sessionId"],
+      where: { sessionId: { in: inflightIds } },
+      _sum: { durationMs: true },
+    });
+    for (const row of chunkSums) {
+      chunkMap.set(row.sessionId, row._sum.durationMs ?? 0);
+    }
+  }
 
   return sessions.map((s) => {
-    const segMax = maxEndMap.get(s.id) ?? 0;
-    const dur = s.durationMs ?? 0;
-    const contributionMs = Math.max(segMax, dur);
+    let contributionMs = 0;
     let source: RecordingContribution["source"] = "none";
-    if (segMax >= dur && segMax > 0) source = "segments";
-    else if (dur > 0) source = "durationMs";
+    if (s.durationMs != null && s.durationMs > 0) {
+      contributionMs = s.durationMs;
+      source = "durationMs";
+    } else {
+      const fromChunks = chunkMap.get(s.id) ?? 0;
+      if (fromChunks > 0) {
+        contributionMs = fromChunks;
+        source = "chunks";
+      }
+    }
     return {
       sessionId: s.id,
       title: s.title,
