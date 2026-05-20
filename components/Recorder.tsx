@@ -1167,22 +1167,30 @@ function LiveCard({
   const hasTranslation = showTranslation && !!translatedText;
   const isListening = !sourceText && recording;
 
-  // Same idea as in UtteranceCard: when translation hasn't shown up yet,
-  // source becomes the primary readable text so the live block doesn't look
-  // like a faint header.
-  const sourceClass = !hasTranslation
-    ? "text-2xl md:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50"
-    : displayMode === "source-emphasis"
-    ? "text-lg md:text-xl font-semibold text-zinc-900 dark:text-zinc-50"
-    : displayMode === "balanced"
-    ? "text-base md:text-lg text-zinc-800 dark:text-zinc-100"
-    : "text-sm md:text-base text-zinc-500 dark:text-zinc-400";
-  const translationClass =
-    displayMode === "translation-emphasis"
+  // Decouple font-size from `hasTranslation` to kill the layout-shift /
+  // jitter that used to happen every frame Soniox (or Chrome Translator)
+  // re-snapshotted `transPending`. The old code switched source from
+  // text-2xl/3xl to text-lg/xl the instant the first pending translation
+  // landed, mid-sentence — visually jarring.
+  //
+  // Now: the type scale is purely a function of `displayMode` plus whether
+  // the user has translation enabled at all (`showTranslation`). When
+  // translation is off we collapse to source-emphasis so the lone source
+  // line still reads like a header. Neither of those inputs flips during a
+  // single utterance, so font-size stays stable while content streams in.
+  const effectiveMode: DisplayMode = showTranslation ? displayMode : "source-emphasis";
+  const sourceClass =
+    effectiveMode === "source-emphasis"
       ? "text-2xl md:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50"
-      : displayMode === "balanced"
-      ? "text-lg md:text-xl font-semibold text-zinc-800 dark:text-zinc-100"
-      : "text-base text-zinc-600 dark:text-zinc-300";
+      : effectiveMode === "balanced"
+      ? "text-xl md:text-2xl font-semibold text-zinc-800 dark:text-zinc-100"
+      : "text-lg md:text-xl text-zinc-600 dark:text-zinc-300";
+  const translationClass =
+    effectiveMode === "translation-emphasis"
+      ? "text-2xl md:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50"
+      : effectiveMode === "balanced"
+      ? "text-xl md:text-2xl font-semibold text-zinc-800 dark:text-zinc-100"
+      : "text-base md:text-lg text-zinc-600 dark:text-zinc-300";
   const textWrapClass = "whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
 
   return (
