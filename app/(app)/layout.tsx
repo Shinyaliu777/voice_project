@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toaster";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { AnalyticsBoot } from "@/components/AnalyticsBoot";
+import { TranscriptionAppProvider } from "@/lib/audio/transcription-app-provider";
 import { getDevUser } from "@/lib/dev-user";
 
 // The entire authenticated shell depends on per-user DB data (current user,
@@ -34,6 +35,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   // language once and the recorder UI persists it from that point.
 
   return (
+    <TranscriptionAppProvider>
     <div className="flex min-h-screen bg-zinc-50 dark:bg-zinc-950">
       {/* Desktop: persistent sidebar column. Below lg the column is hidden
           and MobileSidebar (rendered in the header) handles navigation. */}
@@ -83,5 +85,6 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           NEXT_PUBLIC_POSTHOG_KEY is unset (local dev / preview). */}
       <AnalyticsBoot userId={user.id} />
     </div>
+    </TranscriptionAppProvider>
   );
 }

@@ -38,6 +38,7 @@ import {
   type BrowserSupport,
   type StartRecordingOptions,
 } from "@/lib/audio/transcription-app";
+import { useTranscriptionEventSync } from "@/lib/stores/use-transcription-event-sync";
 import type { IdleDetectionPlugin } from "@/lib/audio/plugins/idle-detection";
 import type { LiveSharePlugin } from "@/lib/audio/plugins/live-share";
 import type { MinutesPlugin } from "@/lib/audio/plugins/minutes";
@@ -86,6 +87,13 @@ export interface TranscriptionAppProviderProps {
 }
 
 export function TranscriptionAppProvider({ children }: TranscriptionAppProviderProps) {
+  // Bridge EventBus events into the Zustand TranscriptionStore so any
+  // consumer of useTranscriptionStore stays in sync with the engine.
+  // Mounting it inside the Provider means it's tied to the same
+  // lifecycle as the engine ref below — no one has to remember to
+  // mount the hook separately.
+  useTranscriptionEventSync();
+
   const appRef = React.useRef<TranscriptionApp | null>(null);
   const [isInitialized, setIsInitialized] = React.useState(false);
   const [isStarting, setIsStarting] = React.useState(false);
