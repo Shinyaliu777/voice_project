@@ -215,6 +215,14 @@ export async function POST(req: Request) {
     .catch(() => {});
 
   const llm = getLLMProvider();
+  // Chat over transcript benefits from a stronger reasoning model
+  // (multi-turn context, citation, reasoning about the recording's
+  // content). Resolution order: explicit body.model (per-request
+  // override) → LLM_CHAT_MODEL env → "deepseek-v4-pro" code fallback.
+  // Other LLM tasks (translate / lookup / term-extract / flashcard)
+  // intentionally stay on the cheaper default (v4-flash) — only minutes
+  // and chat are reader-facing enough to justify pro's price.
+  const chatModel = body.model || process.env.LLM_CHAT_MODEL || "deepseek-v4-pro";
   const enc = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -227,7 +235,7 @@ export async function POST(req: Request) {
       let assembled = "";
       try {
         for await (const delta of llm.stream(messages, {
-          model: body.model,
+          model: chatModel,
         })) {
           if (!delta) continue;
           assembled += delta;
