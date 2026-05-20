@@ -909,44 +909,71 @@ export class Recorder {
       const isTranslation =
         status !== "" && status !== "original" && status !== "none";
 
-      let u = this.currentUtterances.get(speakerId);
-
-      // A translation token with no in-flight utterance for this speaker
-      // is almost always a lagging translation for an utterance whose
-      // source <end> already parked it in awaitingTrans. Backfill the
-      // queue head instead of opening a new utterance (which would
-      // misattribute the translation to the next sentence).
-      if (!u && isTranslation) {
+      // ---- Translation token routing (high priority) ----
+      // A translation token belongs to whichever awaiting utterance shares
+      // its audio time span — Soniox tags translation tokens with the
+      // start_ms / end_ms of the source token they translate, so we can
+      // match by time even when multiple utterances are mid-await or when
+      // the next sentence's source has already opened a new entry in
+      // currentUtterances. Without this priority, translation tokens that
+      // arrived AFTER the next source sentence started were misattributed
+      // to that next sentence — visible as every card showing the
+      // PREVIOUS sentence's translation ("+1 offset").
+      if (isTranslation) {
         const queue = this.awaitingTrans.get(speakerId);
         if (queue && queue.length > 0) {
-          const head = queue[0];
+          // Find the awaiting utterance whose [startMs, endMs] window best
+          // contains this token's startMs. 1500ms slop because Soniox
+          // rounds boundaries and translation tokens may be slightly
+          // outside the source span.
+          let bestIdx = -1;
+          let bestDist = Infinity;
+          for (let i = 0; i < queue.length; i++) {
+            const c = queue[i].u;
+            if (startMs >= c.startMs - 1500 && startMs <= c.endMs + 1500) {
+              const dist = Math.abs(startMs - c.startMs);
+              if (dist < bestDist) {
+                bestIdx = i;
+                bestDist = dist;
+              }
+            }
+          }
+          // Fallback: no time match (Soniox occasionally omits start_ms
+          // on translation tokens). Use FIFO queue head — at least we
+          // route to AN awaited utterance instead of leaking into the
+          // next sentence's currentUtterances entry.
+          if (bestIdx < 0) bestIdx = 0;
+
+          const matched = queue[bestIdx];
           if (tok.text === "<end>") {
             if (isFinal) {
-              // Translation stream finished for this awaited utterance —
-              // real finalize now. Promote any unmerged transPending.
-              if (head.u.transPending && !head.u.transFinal) {
-                head.u.transFinal = head.u.transPending;
-                head.u.transPending = "";
+              if (matched.u.transPending && !matched.u.transFinal) {
+                matched.u.transFinal = matched.u.transPending;
+                matched.u.transPending = "";
               }
-              this.emitUtterance(head.u, true);
-              this.finalizeQueue.push(head.u);
-              queue.shift();
+              this.emitUtterance(matched.u, true);
+              this.finalizeQueue.push(matched.u);
+              queue.splice(bestIdx, 1);
               if (queue.length === 0) this.awaitingTrans.delete(speakerId);
               awaitingFinalizedThisFrame = true;
             }
             continue;
           }
           if (isFinal) {
-            head.u.transFinal += tok.text;
-            head.u.endMs = Math.max(head.u.endMs, endMs);
+            matched.u.transFinal += tok.text;
+            matched.u.endMs = Math.max(matched.u.endMs, endMs);
             awaitingTouched.add(speakerId);
           }
-          // Ignore non-final translation tokens while awaiting — we don't
-          // need a streaming preview here; the card already shows the
-          // source and the final translation will overwrite when it lands.
+          // Ignore non-final translation tokens during await.
           continue;
         }
+        // No awaiting queue for this speaker — translation token has no
+        // park to go to. Falls through to currentUtterances handling
+        // below (could happen if Soniox sends a translation BEFORE the
+        // matching source <end>; rare).
       }
+
+      let u = this.currentUtterances.get(speakerId);
 
       if (!u) {
         u = {
