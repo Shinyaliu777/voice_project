@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowDown,
   ArrowDownUp,
   ArrowLeftRight,
   Loader2,
@@ -1041,11 +1042,54 @@ function UtteranceList({
 }: UtteranceListProps) {
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
+  // `pinnedRef` mirrors `showJumpToBottom` but lives outside React state so
+  // the scroll-handler can read the latest value without triggering re-renders.
+  // We *do* setState so the "jump to bottom" button can mount/unmount, but we
+  // gate it on a rAF-throttled scroll handler to keep cost flat as new
+  // utterances stream in.
+  const pinnedRef = React.useRef(true);
+  const [showJumpToBottom, setShowJumpToBottom] = React.useState(false);
 
-  // Pin to bottom when content grows, matching lecsync's live cadence.
+  // Track whether the user has scrolled away from the bottom. The previous
+  // implementation auto-scrolled on every new finalized utterance with no
+  // user-scroll detection, which made reading history impossible during a
+  // live recording (each new line yanked the view back down).
   React.useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
+    const el = scrollerRef.current;
+    if (!el) return;
+    let raf: number | null = null;
+    const onScroll = () => {
+      if (raf != null) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+        const nextPinned = dist < 64; // 64px tolerance for "at bottom"
+        if (nextPinned !== pinnedRef.current) {
+          pinnedRef.current = nextPinned;
+          setShowJumpToBottom(!nextPinned);
+        }
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (raf != null) cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  // Only auto-scroll when the user is already at the bottom. Reading history
+  // mid-recording now sticks.
+  React.useEffect(() => {
+    if (pinnedRef.current) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
   }, [finalIds.length, byId]);
+
+  const handleJumpToBottom = React.useCallback(() => {
+    pinnedRef.current = true;
+    setShowJumpToBottom(false);
+    bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, []);
 
   return (
     <div className="relative flex flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800/80 dark:bg-zinc-950">
@@ -1071,6 +1115,17 @@ function UtteranceList({
             <div ref={bottomRef} aria-hidden />
           </div>
         </div>
+        {showJumpToBottom ? (
+          <button
+            type="button"
+            onClick={handleJumpToBottom}
+            className="absolute bottom-3 right-3 z-10 inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm backdrop-blur transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            aria-label="回到最新"
+          >
+            <ArrowDown className="h-3 w-3" aria-hidden />
+            回到最新
+          </button>
+        ) : null}
       </div>
     </div>
   );
