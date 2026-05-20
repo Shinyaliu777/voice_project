@@ -58,6 +58,7 @@ import type {
   MinutesStreamEvent,
   RecorderEvent,
   RecorderState,
+  SegmentDTO,
   SessionDTO,
   SonioxTokenResponse,
   TranslationMode,
@@ -82,6 +83,10 @@ interface LiveState {
   startedAt: number | null;
   order: string[];
   byId: Record<string, Utterance>;
+  /** Wall-clock ms of recording already done before this React mount.
+   *  Non-zero only when we resumed a previously in-progress session;
+   *  the visible timer is `(now - startedAt) + elapsedOffset`. */
+  elapsedOffset: number;
 }
 
 type Action =
@@ -89,7 +94,12 @@ type Action =
   | { type: "started"; at: number }
   | { type: "state"; value: RecorderState }
   | { type: "level"; value: number }
-  | { type: "utterance"; value: Utterance };
+  | { type: "utterance"; value: Utterance }
+  | {
+      type: "restored";
+      offsetMs: number;
+      utterances: Utterance[];
+    };
 
 function initialState(): LiveState {
   return {
@@ -98,6 +108,7 @@ function initialState(): LiveState {
     startedAt: null,
     order: [],
     byId: {},
+    elapsedOffset: 0,
   };
 }
 
@@ -117,6 +128,23 @@ function reducer(state: LiveState, action: Action): LiveState {
       const byId = { ...state.byId, [u.id]: u };
       const order = existing ? state.order : [...state.order, u.id];
       return { ...state, byId, order };
+    }
+    case "restored": {
+      // Prepopulate the live view with utterances from the prior
+      // recording, plus stash the wall-clock offset so the timer
+      // continues from where it left off (e.g. 18:36, not 00:00).
+      const byId: Record<string, Utterance> = {};
+      const order: string[] = [];
+      for (const u of action.utterances) {
+        byId[u.id] = u;
+        order.push(u.id);
+      }
+      return {
+        ...state,
+        byId,
+        order,
+        elapsedOffset: action.offsetMs,
+      };
     }
     default:
       return state;
@@ -365,7 +393,9 @@ export function Recorder({
     }
   }, []);
 
-  const startRecording = React.useCallback(async (resumeSessionId?: string) => {
+  const startRecording = React.useCallback(async (
+    resume?: { sessionId: string; offsetMs: number }
+  ) => {
     if (starting || state.status === "recording") return;
     setStarting(true);
     setConfirmedSections([]);
@@ -373,17 +403,93 @@ export function Recorder({
     setMinutesStatus("idle");
     try {
       let session: SessionDTO;
+      const resumeSessionId = resume?.sessionId;
       if (resumeSessionId) {
         // Resume an existing in-progress session — reuse its id so new
         // chunks and segments append to the prior content. Server-side
         // chunkIndex / segmentIndex auto-increment on the next POST so
         // the client doesn't need to know the previous max.
-        const resp = await fetch(
-          `/api/transcription/sessions/${encodeURIComponent(resumeSessionId)}`
+        //
+        // Also load existing segments + the offset so the timer
+        // continues and the transcript list shows what was already
+        // captured. Without this, the resume banner would silently
+        // discard the prior 190 sentences from view (they stay in DB
+        // but the user sees a blank screen on continue).
+        const [sessionResp, segmentsResp, minutesResp] = await Promise.all([
+          fetch(
+            `/api/transcription/sessions/${encodeURIComponent(resumeSessionId)}`
+          ),
+          fetch(
+            `/api/transcription/sessions/${encodeURIComponent(resumeSessionId)}/segments`
+          ),
+          fetch(
+            `/api/sessions/${encodeURIComponent(resumeSessionId)}/minutes`
+          ),
+        ]);
+        if (!sessionResp.ok)
+          throw new Error(`Failed to load session (${sessionResp.status})`);
+        session = (await sessionResp.json()) as SessionDTO;
+
+        // Best-effort segment restore — failures here shouldn't block
+        // recording itself (user can still record the new portion).
+        let utterances: Utterance[] = [];
+        if (segmentsResp.ok) {
+          const data = (await segmentsResp.json().catch(() => null)) as
+            | { items?: SegmentDTO[] }
+            | null;
+          const items = data?.items ?? [];
+          // Map DB SegmentDTO → in-app Utterance (rename fields,
+          // collapse null translation to empty string). All restored
+          // segments are by definition finalized — we don't keep
+          // partials in DB.
+          utterances = items
+            .filter((s) => s.isFinal !== false)
+            .map((s) => ({
+              id: s.id,
+              speakerId: s.speakerId ?? undefined,
+              startMs: s.audioStartMs,
+              endMs: s.audioEndMs,
+              sourceText: s.sourceText,
+              translatedText: s.translatedText ?? "",
+              isFinal: true,
+            }));
+        }
+        dispatch({
+          type: "restored",
+          offsetMs: resume.offsetMs,
+          utterances,
+        });
+
+        // Restore live minutes too — without this the panel shows
+        // "等待第一段内容" until the incremental refresh effect
+        // accumulates enough new text to fire again, which feels
+        // wrong (user just had a recording mid-way through producing
+        // sections). 404 = no minutes yet, totally fine.
+        if (minutesResp.ok) {
+          try {
+            const m = (await minutesResp.json()) as {
+              liveSections?: MinutesSection[] | null;
+              liveStatus?: string;
+            };
+            if (m.liveSections && m.liveSections.length > 0) {
+              setConfirmedSections(m.liveSections);
+            }
+          } catch {
+            /* shape mismatch — ignore */
+          }
+        }
+
+        // Seed minutesSentIdsRef so the next incremental refresh
+        // doesn't re-send the entire pre-existing transcript to the
+        // LLM (would burn tokens + likely duplicate sections).
+        // Actual ref is initialized inside the auto-refresh effect
+        // below; here we just mark every restored utterance as "sent"
+        // since the saved liveSections already cover them.
+        minutesSentIdsRef.current = new Set(utterances.map((u) => u.id));
+        lastMinutesCharsRef.current = utterances.reduce(
+          (acc, u) => acc + u.sourceText.trim().length,
+          0
         );
-        if (!resp.ok)
-          throw new Error(`Failed to load session (${resp.status})`);
-        session = (await resp.json()) as SessionDTO;
       } else {
         // Title is intentionally blank by default. The schema default
         // is "" and SessionCard renders that as the formatted createdAt.
@@ -725,8 +831,13 @@ export function Recorder({
     }
   }, [state.status, state.startedAt]);
 
+  // For resumed sessions, elapsedOffset carries the wall-clock minutes
+  // recorded before this mount (e.g. 18:36) so the timer continues
+  // instead of restarting from 00:00.
   const elapsedMs =
-    state.startedAt != null && nowTs > 0 ? Math.max(0, nowTs - state.startedAt) : 0;
+    state.startedAt != null && nowTs > 0
+      ? Math.max(0, nowTs - state.startedAt) + state.elapsedOffset
+      : state.elapsedOffset;
   const elapsedRef = React.useRef(elapsedMs);
   elapsedRef.current = elapsedMs;
   const getCurrentMs = React.useCallback(() => elapsedRef.current, []);
@@ -889,7 +1000,10 @@ export function Recorder({
             to the prior content. */}
         <ResumeRecordingBanner
           onResume={(session) => {
-            void startRecording(session.id);
+            void startRecording({
+              sessionId: session.id,
+              offsetMs: session.lastChunkEndMs,
+            });
           }}
         />
 
