@@ -13,7 +13,12 @@ export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
   sessionId: z.string().min(1),
-  totalDurationMs: z.number().int().min(0),
+  // Optional: when the client knows its own startedAtMs / pausedTime
+  // it sends the wall-clock duration here. If absent (e.g. a recovery
+  // call after a tab crash / page reload that lost the client clock),
+  // we fall back to sum(AudioChunk.durationMs) which is the recorded
+  // wall-clock time MediaRecorder produced anyway.
+  totalDurationMs: z.number().int().min(0).optional(),
 });
 
 function extFromContentType(ct: string): string {
@@ -136,6 +141,7 @@ export async function POST(req: NextRequest) {
       contentType: true,
       storageKey: true,
       sizeBytes: true,
+      durationMs: true,
     },
   });
   if (chunks.length === 0) {
@@ -144,6 +150,17 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+
+  // Resolve duration: prefer the client-tracked wall clock (more accurate
+  // — accounts for pause time), fall back to sum(chunks.durationMs) when
+  // the client didn't or couldn't compute one. The fallback is the right
+  // recovery path for sessions where the user closed the tab without
+  // pressing "结束录制" and is now manually finalizing from the history
+  // page; the client doesn't have the original startedAtMs anymore.
+  const resolvedDurationMs =
+    totalDurationMs !== undefined
+      ? totalDurationMs
+      : chunks.reduce((acc, c) => acc + (c.durationMs ?? 0), 0);
 
   const firstContentType = chunks[0].contentType;
   const ext = extFromContentType(firstContentType);
@@ -175,7 +192,7 @@ export async function POST(req: NextRequest) {
     data: {
       audioPath: finalKey,
       audioContentType: firstContentType,
-      durationMs: totalDurationMs,
+      durationMs: resolvedDurationMs,
       status: "ready",
     },
   });
@@ -184,7 +201,7 @@ export async function POST(req: NextRequest) {
     sessionId,
     audioPath: finalKey,
     audioContentType: firstContentType,
-    durationMs: totalDurationMs,
+    durationMs: resolvedDurationMs,
     audioUrl: `/api/audio/file/${finalKey}`,
   };
   return NextResponse.json(resp);

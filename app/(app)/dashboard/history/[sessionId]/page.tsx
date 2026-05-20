@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Bookmark as BookmarkIcon, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AudioPlayer } from "@/components/AudioPlayer";
+import { FinalizeAudioButton } from "@/components/FinalizeAudioButton";
 import { displaySessionTitle } from "@/components/SessionCard";
 import { TranscriptView } from "@/components/TranscriptView";
 import { MinutesView } from "@/components/MinutesView";
@@ -75,6 +76,11 @@ export default async function SessionDetailPage({
         speakerNames: true,
         bookmarks: { orderBy: { atMs: "asc" } },
         minutes: true,
+        // Need to know whether ANY chunks were uploaded so we can
+        // surface a "完成上传" recovery button when audioPath is empty
+        // but the user clearly recorded something. `select: { id }`
+        // keeps it cheap.
+        audioChunks: { select: { id: true } },
       },
     }),
     prisma.folder.findMany({
@@ -223,9 +229,21 @@ export default async function SessionDetailPage({
         <div className="mb-8 rounded-[10px] bg-zinc-50 p-4 dark:bg-zinc-900/40">
           <AudioPlayer src={audioUrl} bookmarks={bookmarks} />
         </div>
+      ) : session.audioChunks.length > 0 ? (
+        // Chunks were uploaded but finalize never ran (tab closed
+        // without 结束录制, finalize errored, etc.). Offer manual
+        // recovery — finalize now accepts a missing totalDurationMs
+        // and computes it from chunks.
+        <div className="mb-8 flex flex-col items-center gap-3 rounded-[10px] border border-dashed border-amber-300 bg-amber-50/60 p-6 text-center text-sm dark:border-amber-700/60 dark:bg-amber-950/20">
+          <p className="text-zinc-700 dark:text-zinc-200">
+            音频上传未完成 — {session.audioChunks.length} 个音频块在服务器，
+            但没有拼接成最终文件
+          </p>
+          <FinalizeAudioButton sessionId={session.id} />
+        </div>
       ) : (
         <div className="mb-8 rounded-[10px] border border-dashed border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950">
-          暂无音频文件 — 录音可能仍在上传中
+          暂无音频文件
         </div>
       )}
 
