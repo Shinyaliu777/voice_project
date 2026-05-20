@@ -10,7 +10,6 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
-  FolderInput,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -316,14 +315,12 @@ export function SessionCard({ session }: SessionCardProps) {
               <Pencil className="h-4 w-4" />
               <span>重命名</span>
             </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled
-              onSelect={(e) => e.preventDefault()}
-              className="text-zinc-400"
-            >
-              <FolderInput className="h-4 w-4" />
-              <span>移动到文件夹</span>
-            </DropdownMenuItem>
+            {/* "移动到文件夹" lived here as a disabled placeholder.
+                The session detail page has a working folder picker —
+                rather than leave a dead row in the dropdown, drop it
+                and let users move from the detail page. If we want to
+                re-add it later, lift the folder list to this component
+                and reuse SessionFolderPicker. */}
             <DropdownMenuItem
               onSelect={(e) => {
                 e.preventDefault();

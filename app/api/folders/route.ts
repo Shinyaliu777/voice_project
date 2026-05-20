@@ -55,6 +55,23 @@ export async function POST(req: NextRequest) {
   }
   const { name, color, sourceLang, targetLang } = parsed.data;
 
+  // Surface a clean 409 when the user already has a folder of the same
+  // name. There's no DB-level @@unique on (userId, name) yet — adding
+  // one would require a migration that could fail on existing dup data
+  // — so we do an explicit lookup. CreateFolderCard expects this 409
+  // shape; without it, creating a duplicate silently succeeded and the
+  // toast said "已创建" while showing two folders side-by-side.
+  const existingDup = await prisma.folder.findFirst({
+    where: { userId, name },
+    select: { id: true },
+  });
+  if (existingDup) {
+    return NextResponse.json(
+      { error: "Folder with this name already exists" },
+      { status: 409 }
+    );
+  }
+
   const folder = await prisma.folder.create({
     data: {
       userId,

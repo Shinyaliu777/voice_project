@@ -22,6 +22,29 @@ export interface SessionActionsBarProps {
   title: string;
 }
 
+/**
+ * Pluck the audio file extension off the storage URL (e.g.
+ * /api/audio/file/audio/<cuid>/final.webm → ".webm"). Returns a
+ * leading dot so callers can concatenate. Falls back to ".webm"
+ * because that's what MediaRecorder produces in every browser we
+ * support — better to guess one specific codec than to write a
+ * generic ".audio" the OS can't recognize.
+ */
+function audioExtensionFromUrl(url: string): string {
+  try {
+    const path = url.split("?")[0];
+    const last = path.split("/").pop() ?? "";
+    const dot = last.lastIndexOf(".");
+    if (dot > 0 && dot < last.length - 1) {
+      const ext = last.slice(dot + 1).toLowerCase();
+      if (/^[a-z0-9]{2,5}$/.test(ext)) return `.${ext}`;
+    }
+  } catch {
+    /* fall through */
+  }
+  return ".webm";
+}
+
 export function SessionActionsBar({
   sessionId,
   audioUrl,
@@ -73,7 +96,14 @@ export function SessionActionsBar({
 
       {audioUrl ? (
         <Button variant="outline" size="sm" asChild>
-          <a href={audioUrl} download={`${title || "recording"}.audio`}>
+          {/* Derive the file extension from the URL (the storage layer
+              names files audio/{sessionId}/final.{webm|m4a|ogg}). The
+              previous ".audio" suffix made browsers save files with an
+              unrecognized extension that no media player could open. */}
+          <a
+            href={audioUrl}
+            download={`${title || "recording"}${audioExtensionFromUrl(audioUrl)}`}
+          >
             <Download className="h-4 w-4" />
             <span>下载音频</span>
           </a>

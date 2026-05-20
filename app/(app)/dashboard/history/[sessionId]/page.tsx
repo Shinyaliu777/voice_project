@@ -268,9 +268,16 @@ export default async function SessionDetailPage({
             </div>
           ) : (
             <div className="rounded-[10px] border border-zinc-100 bg-white p-4 dark:border-zinc-900 dark:bg-zinc-950">
+              {/* Pass session languages so SelectionPopover (查词 / 提问 /
+                  加生词本) uses the recording's actual language pair
+                  instead of the en→zh defaults that pop up if these
+                  props are omitted. Affects lookup quality for every
+                  non-English session. */}
               <TranscriptView
                 segments={segments}
                 speakerNames={speakerNames}
+                sourceLanguage={session.sourceLang}
+                targetLanguage={session.targetLang}
               />
             </div>
           )}
