@@ -39,6 +39,10 @@ import type {
   WorkletInboundMessage,
 } from "./types";
 import { transcriptionEventBus } from "./event-bus";
+import {
+  TranslationQueue,
+  makeTranslationJobId,
+} from "./translation-queue";
 
 // -------- Chrome Translator API shape (lib/translation/chrome-local.ts owns the global) --------
 
@@ -124,14 +128,9 @@ export class TranscriptionService {
   private finalizeQueue: UtteranceBuilder[] = [];
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
   private segmentToUtterance: Map<string, string> = new Map();
-  private liveTranslate: Map<
-    number | undefined,
-    {
-      lastTranslated: string;
-      timer: ReturnType<typeof setTimeout> | null;
-      inFlight: boolean;
-    }
-  > = new Map();
+  private translationQueue: TranslationQueue | null = null;
+  private lastEnqueuedSourceBySpeaker: Map<number | undefined, string> =
+    new Map();
 
   // ---- chunk pipeline (emit-only — uploads/IDB owned by persistence plugin) ----
   private mediaRecorder: MediaRecorder | null = null;
@@ -228,6 +227,7 @@ export class TranscriptionService {
           this.config.targetLanguage,
           this.config.sourceLanguage
         );
+        this.setupTranslationQueue();
       }
 
       this.attachVisibilityMonitor();
@@ -1006,12 +1006,12 @@ export class TranscriptionService {
             queue.push({ u, awaitingSince: performance.now() });
             this.awaitingTrans.set(speakerId, queue);
             this.currentUtterances.delete(speakerId);
-            this.liveTranslate.delete(speakerId);
+            this.lastEnqueuedSourceBySpeaker.delete(speakerId);
             this.emitUtterance(u, true);
           } else {
             finalizedThisFrame.push(u);
             this.currentUtterances.delete(speakerId);
-            this.liveTranslate.delete(speakerId);
+            this.lastEnqueuedSourceBySpeaker.delete(speakerId);
           }
         }
         continue;
@@ -1140,49 +1140,53 @@ export class TranscriptionService {
     return true;
   }
 
+  /**
+   * Local-mode: enqueue the in-flight utterance's running source for
+   * translation via TranslationQueue (lecsync-style two-priority,
+   * single-slot low-priority replacement). No setTimeout debounce —
+   * the queue's natural backpressure is the API call latency itself.
+   */
   private scheduleLiveTranslate(u: UtteranceBuilder): void {
     if (this.config.translationMode !== "local") return;
+    if (!this.translationQueue) return;
     const source = (u.sourceFinal + u.sourcePending).trim();
     if (!source) return;
-    const speakerKey = u.speakerId;
-    const state =
-      this.liveTranslate.get(speakerKey) ??
-      { lastTranslated: "", timer: null, inFlight: false };
-    this.liveTranslate.set(speakerKey, state);
-    if (state.lastTranslated === source) return;
-    if (state.timer) {
-      clearTimeout(state.timer);
-      state.timer = null;
-    }
-    state.timer = setTimeout(async () => {
-      state.timer = null;
-      if (state.inFlight) return;
-      const live = this.currentUtterances.get(speakerKey);
-      if (live !== u) return;
-      const latest = (u.sourceFinal + u.sourcePending).trim();
-      if (!latest || latest === state.lastTranslated) return;
-      state.inFlight = true;
-      try {
-        const translated = await this.translateAutoDirection(latest);
-        if (translated == null) return;
-        if (this.currentUtterances.get(speakerKey) !== u) return;
-        state.lastTranslated = latest;
-        u.transFinal = "";
-        u.transPending = translated;
-        this.emitUtterance(u, false);
-      } catch {
-        /* swallow */
-      } finally {
-        state.inFlight = false;
-        const after = this.currentUtterances.get(speakerKey);
-        if (after === u) {
-          const now = (u.sourceFinal + u.sourcePending).trim();
-          if (now && now !== state.lastTranslated) {
-            this.scheduleLiveTranslate(u);
-          }
+    const last = this.lastEnqueuedSourceBySpeaker.get(u.speakerId);
+    if (last === source) return;
+    this.lastEnqueuedSourceBySpeaker.set(u.speakerId, source);
+    this.translationQueue.enqueue({
+      id: makeTranslationJobId(),
+      segmentId: u.id,
+      text: source,
+      priority: "low",
+      timestamp: Date.now(),
+    });
+  }
+
+  private setupTranslationQueue(): void {
+    if (this.config.translationMode !== "local") return;
+    if (this.translationQueue) return;
+    this.translationQueue = new TranslationQueue();
+    this.translationQueue.setHandlers({
+      onResult: (job, translated) => {
+        for (const u of this.currentUtterances.values()) {
+          if (u.id !== job.segmentId) continue;
+          u.transFinal = "";
+          u.transPending = translated;
+          this.emitUtterance(u, false);
+          return;
         }
-      }
-    }, 350);
+      },
+    });
+    this.translationQueue.setTranslator({
+      translate: async (text: string) => {
+        const r = await this.translateAutoDirection(text);
+        if (r == null) {
+          throw new Error("translator-unavailable");
+        }
+        return r;
+      },
+    });
   }
 
   private emitUtterance(u: UtteranceBuilder, isFinal: boolean): void {
@@ -1641,6 +1645,11 @@ export class TranscriptionService {
       clearTimeout(this.finalizeTimer);
       this.finalizeTimer = null;
     }
+    if (this.translationQueue) {
+      this.translationQueue.destroy();
+      this.translationQueue = null;
+    }
+    this.lastEnqueuedSourceBySpeaker.clear();
     try {
       this.workletNode?.disconnect();
     } catch { /* ignore */ }

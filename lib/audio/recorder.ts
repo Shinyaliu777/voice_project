@@ -26,6 +26,10 @@ import type {
   WorkletInboundMessage,
 } from "./types";
 import { getAudioLocalCache } from "./local-cache";
+import {
+  TranslationQueue,
+  makeTranslationJobId,
+} from "./translation-queue";
 
 // -------- Chrome Translator API shape (lib/translation/chrome-local.ts owns the global) --------
 
@@ -95,18 +99,17 @@ export class Recorder {
   /** Maps DB segment id → the in-app utterance id we emitted, so we can fan
    *  a translation PATCH back out as an `utterance` event the UI picks up. */
   private segmentToUtterance: Map<string, string> = new Map();
-  /** Per-speaker live-translate bookkeeping for "local" mode. Soniox already
-   *  paired translation in "cloud" mode, but in "local" mode we run Chrome
-   *  Translator over the in-flight source on a debounce so the LIVE card
-   *  shows growing translation alongside the source. */
-  private liveTranslate: Map<
-    number | undefined,
-    {
-      lastTranslated: string;
-      timer: ReturnType<typeof setTimeout> | null;
-      inFlight: boolean;
-    }
-  > = new Map();
+  /** Translation pipeline for "local" mode. Replaces the previous
+   *  setTimeout(350) per-speaker debounce — lecsync's two-priority
+   *  queue (decompiled in lib/audio/translation-queue.ts) cuts the
+   *  perceived latency from ~450ms to ~100-200ms because the API
+   *  call itself is the throttle interval, not a fixed timer. */
+  private translationQueue: TranslationQueue | null = null;
+  /** Most recently enqueued source-text per speaker. Used to skip
+   *  duplicate enqueues when the source hasn't changed (saves a wasted
+   *  translator call when Soniox re-emits the same partial). */
+  private lastEnqueuedSourceBySpeaker: Map<number | undefined, string> =
+    new Map();
 
   // ---- chunk upload pipeline ----
   private mediaRecorder: MediaRecorder | null = null;
@@ -241,6 +244,7 @@ export class Recorder {
           this.config.targetLanguage,
           this.config.sourceLanguage
         );
+        this.setupTranslationQueue();
       }
 
       this.attachVisibilityMonitor();
@@ -1179,7 +1183,7 @@ export class Recorder {
             queue.push({ u, awaitingSince: performance.now() });
             this.awaitingTrans.set(speakerId, queue);
             this.currentUtterances.delete(speakerId);
-            this.liveTranslate.delete(speakerId);
+            this.lastEnqueuedSourceBySpeaker.delete(speakerId);
             // Emit once now (with whatever transFinal we have, likely
             // empty) so the UI promotes the source card immediately;
             // we re-emit when the translation lands.
@@ -1187,7 +1191,7 @@ export class Recorder {
           } else {
             finalizedThisFrame.push(u);
             this.currentUtterances.delete(speakerId);
-            this.liveTranslate.delete(speakerId);
+            this.lastEnqueuedSourceBySpeaker.delete(speakerId);
           }
         }
         continue;
@@ -1352,57 +1356,68 @@ export class Recorder {
    * translation only appears AFTER <end>, which makes the live block feel
    * like it's missing the bottom half.
    */
+  /**
+   * Local-mode: enqueue the in-flight utterance's running source text
+   * for translation. Replaces the previous setTimeout(350) debounce.
+   *
+   * The queue's low-priority slot is single-element — if another
+   * partial arrives while a translation is in flight, the slot is
+   * overwritten and only the latest source gets translated next.
+   * Natural backpressure, no fixed timer.
+   */
   private scheduleLiveTranslate(u: UtteranceBuilder): void {
     if (this.config.translationMode !== "local") return;
+    if (!this.translationQueue) return;
     const source = (u.sourceFinal + u.sourcePending).trim();
     if (!source) return;
-    const speakerKey = u.speakerId;
-    const state =
-      this.liveTranslate.get(speakerKey) ??
-      { lastTranslated: "", timer: null, inFlight: false };
-    this.liveTranslate.set(speakerKey, state);
-    if (state.lastTranslated === source) return;
-    if (state.timer) {
-      clearTimeout(state.timer);
-      state.timer = null;
-    }
-    state.timer = setTimeout(async () => {
-      state.timer = null;
-      if (state.inFlight) {
-        // A later debounce will pick up the newer text; skip to avoid races.
-        return;
-      }
-      // Only translate if this utterance is still the in-flight one for the
-      // same speaker — otherwise we're chasing a stale builder.
-      const live = this.currentUtterances.get(speakerKey);
-      if (live !== u) return;
-      const latest = (u.sourceFinal + u.sourcePending).trim();
-      if (!latest || latest === state.lastTranslated) return;
-      state.inFlight = true;
-      try {
-        const translated = await this.translateAutoDirection(latest);
-        if (translated == null) return;
-        // Bail if u was finalized while we were translating.
-        if (this.currentUtterances.get(speakerKey) !== u) return;
-        state.lastTranslated = latest;
-        u.transFinal = ""; // we replace, not append
-        u.transPending = translated;
-        this.emitUtterance(u, false);
-      } catch {
-        // Swallow — error path already surfaces via translateLocal's emitError
-        // when post-finalize translation runs.
-      } finally {
-        state.inFlight = false;
-        // If source advanced again during translation, re-schedule.
-        const after = this.currentUtterances.get(speakerKey);
-        if (after === u) {
-          const now = (u.sourceFinal + u.sourcePending).trim();
-          if (now && now !== state.lastTranslated) {
-            this.scheduleLiveTranslate(u);
-          }
+    // Skip dupes — Soniox occasionally re-emits the same partial; no
+    // point burning a translator call to produce the same output.
+    const last = this.lastEnqueuedSourceBySpeaker.get(u.speakerId);
+    if (last === source) return;
+    this.lastEnqueuedSourceBySpeaker.set(u.speakerId, source);
+    this.translationQueue.enqueue({
+      id: makeTranslationJobId(),
+      segmentId: u.id,
+      text: source,
+      priority: "low",
+      timestamp: Date.now(),
+    });
+  }
+
+  /** Build the TranslationQueue once at start. Result handler matches
+   *  the result back to the still-in-flight utterance via segmentId
+   *  (== u.id, stable across partials). Stale results (utterance has
+   *  already finalized or been replaced) are dropped. */
+  private setupTranslationQueue(): void {
+    if (this.config.translationMode !== "local") return;
+    if (this.translationQueue) return;
+    this.translationQueue = new TranslationQueue();
+    this.translationQueue.setHandlers({
+      onResult: (job, translated) => {
+        // Locate the in-flight utterance that this translation was for.
+        // We match by id rather than speakerId so a fast speaker switch
+        // can't accidentally apply A's translation to B's partial.
+        for (const u of this.currentUtterances.values()) {
+          if (u.id !== job.segmentId) continue;
+          u.transFinal = ""; // replace, don't append
+          u.transPending = translated;
+          this.emitUtterance(u, false);
+          return;
         }
-      }
-    }, 350);
+        // Utterance no longer in-flight (finalized / discarded) — drop.
+      },
+      // Errors silently swallowed for partials; the finalize path
+      // (translateLocal) has its own visible error surface.
+    });
+    this.translationQueue.setTranslator({
+      translate: async (text: string) => {
+        const r = await this.translateAutoDirection(text);
+        if (r == null) {
+          throw new Error("translator-unavailable");
+        }
+        return r;
+      },
+    });
   }
 
   private emitUtterance(u: UtteranceBuilder, isFinal: boolean): void {
@@ -2031,6 +2046,11 @@ export class Recorder {
       clearTimeout(this.finalizeTimer);
       this.finalizeTimer = null;
     }
+    if (this.translationQueue) {
+      this.translationQueue.destroy();
+      this.translationQueue = null;
+    }
+    this.lastEnqueuedSourceBySpeaker.clear();
     try {
       this.workletNode?.disconnect();
     } catch { /* ignore */ }
