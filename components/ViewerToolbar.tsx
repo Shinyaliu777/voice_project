@@ -53,6 +53,11 @@ export interface ViewerToolbarProps {
   /** Current viewer-side target language (BCP-47). */
   viewerLang: SupportedLanguage;
   onViewerLangChange: (next: SupportedLanguage) => void;
+  /** When true, viewer-side re-translation is disabled and host's
+   *  translation is shown verbatim. The lang Select is dimmed but kept
+   *  visible so the user can see/remember their previous override. */
+  followHost: boolean;
+  onFollowHostChange: (next: boolean) => void;
   /** Active font-scale preset. */
   fontScale: FontScalePreset;
   onFontScaleChange: (next: FontScalePreset) => void;
@@ -68,6 +73,8 @@ export function ViewerToolbar({
   statusTone,
   viewerLang,
   onViewerLangChange,
+  followHost,
+  onFollowHostChange,
   fontScale,
   onFontScaleChange,
   theme,
@@ -87,13 +94,40 @@ export function ViewerToolbar({
     <div className="flex flex-wrap items-center justify-end gap-2">
       <StatusPill tone={statusTone} label={statusLabel} />
 
+      {/* Follow-host toggle. When on (default), the viewer just shows the
+          host's translation verbatim — which is what makes host & viewer
+          match. Off lets the viewer re-translate locally via Chrome
+          Translator, which is intentionally a different translation. */}
+      <button
+        type="button"
+        onClick={() => onFollowHostChange(!followHost)}
+        aria-pressed={followHost}
+        className={cn(
+          "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
+          followHost
+            ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+            : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400"
+        )}
+      >
+        {followHost ? "跟随主持人" : "自选译文"}
+      </button>
+
       <Select
         value={viewerLang}
-        onValueChange={(v) => onViewerLangChange(v as SupportedLanguage)}
+        onValueChange={(v) => {
+          // Choosing a language implicitly opts out of follow-host so the
+          // re-translation actually runs.
+          if (followHost) onFollowHostChange(false);
+          onViewerLangChange(v as SupportedLanguage);
+        }}
+        disabled={followHost}
       >
         <SelectTrigger
           aria-label="译文语言"
-          className="h-8 w-auto gap-1.5 px-2.5 text-xs"
+          className={cn(
+            "h-8 w-auto gap-1.5 px-2.5 text-xs",
+            followHost && "opacity-50"
+          )}
         >
           <Languages className="h-3.5 w-3.5 opacity-70" aria-hidden />
           <SelectValue />

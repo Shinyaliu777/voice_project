@@ -404,6 +404,23 @@ export function LiveShareViewer({
   const [viewerLang, setViewerLang] = React.useState<SupportedLanguage>(() =>
     readInitialViewerLang(targetLang)
   );
+  // When true (default), viewer shows the host's translation verbatim
+  // instead of running a parallel local Chrome-Translator pass. This is
+  // what makes the host's screen and the share viewer agree. Users who
+  // want a different target language can flip the toggle in the toolbar.
+  // The `?to=xx` URL param still implies an override → starts with
+  // followHost=false because they explicitly asked for a specific lang.
+  const [followHost, setFollowHost] = React.useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const url = new URL(window.location.href);
+      const q = url.searchParams.get("to");
+      if (q && isSupportedLanguage(q)) return false;
+    } catch {
+      /* ignore */
+    }
+    return true;
+  });
   // Tracked separately so we can re-translate every existing card when the
   // host's source language is delivered via the `joined` event.
   const [effectiveSourceLang, setEffectiveSourceLang] =
@@ -518,17 +535,25 @@ export function LiveShareViewer({
   }, []);
 
   // -------- viewer-side re-translation --------
-  // When the viewer changes language: wipe per-card viewer translations so
-  // the host's translation is shown momentarily, then we re-translate every
-  // card under the new pair.
+  // When the viewer changes language OR re-enables follow-host: wipe
+  // per-card viewer translations so the host's translation is shown
+  // momentarily, then (if follow-host is off) we re-translate every card
+  // under the new pair.
   React.useEffect(() => {
     dispatch({ type: "clearViewerTranslations" });
     translatedSeenRef.current = new Map();
-  }, [viewerLang]);
+  }, [viewerLang, followHost]);
 
   // Pick which card's source text to re-translate: anything whose viewer
   // translation we haven't computed yet under the current pair.
   React.useEffect(() => {
+    // The default branch: viewer follows the host's translation. This is
+    // what makes the two screens agree — the prior behaviour kicked off
+    // an independent Chrome Translator pass for every card and produced
+    // visibly different wording from the host's translation.
+    if (followHost) {
+      return;
+    }
     if (viewerLang === effectiveSourceLang) {
       // Same language — host source IS the translation. Nothing to do.
       return;
@@ -598,7 +623,7 @@ export function LiveShareViewer({
     };
     // Re-run whenever the source map changes — new cards arrive, live card
     // text grows, etc. The `seen` map debounces inside the loop.
-  }, [viewerLang, effectiveSourceLang, state.order, state.byId]);
+  }, [viewerLang, effectiveSourceLang, state.order, state.byId, followHost]);
 
   // Sort cards by audio timeline (startMs) — insertion order isn't reliable
   // because in-flight utterances can be added BEFORE earlier utterances finalize
@@ -655,10 +680,14 @@ export function LiveShareViewer({
       .filter((u): u is DisplayUtterance => !!u)
       .map((u) => ({
         source: u.sourceText,
-        target: u.viewerTranslatedText ?? u.translatedText,
+        // Follow-host mode exports the host's translation; override mode
+        // exports the viewer's local re-translation when available.
+        target: followHost
+          ? u.translatedText
+          : (u.viewerTranslatedText ?? u.translatedText),
       }))
       .filter((row) => row.source || row.target);
-  }, [sortedOrder, state.byId]);
+  }, [sortedOrder, state.byId, followHost]);
 
   const handleCopyAll = React.useCallback(() => {
     const rows = buildExportRows();
@@ -729,7 +758,10 @@ export function LiveShareViewer({
                 </h1>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   {effectiveSourceLang.toUpperCase()} →{" "}
-                  {LANGUAGE_NAMES[viewerLang] ?? viewerLang.toUpperCase()} · 只读
+                  {followHost
+                    ? `${targetLang.toUpperCase()}（跟随主持人）`
+                    : (LANGUAGE_NAMES[viewerLang] ?? viewerLang.toUpperCase())}{" "}
+                  · 只读
                 </p>
               </div>
             </div>
@@ -738,6 +770,8 @@ export function LiveShareViewer({
               statusTone={statusTone}
               viewerLang={viewerLang}
               onViewerLangChange={setViewerLang}
+              followHost={followHost}
+              onFollowHostChange={setFollowHost}
               fontScale={fontScale}
               onFontScaleChange={setFontScale}
               theme={theme}
@@ -764,8 +798,13 @@ export function LiveShareViewer({
                 const u = state.byId[id];
                 if (!u) return null;
                 const isLive = u.id === liveId;
-                const targetText =
-                  u.viewerTranslatedText ?? u.translatedText;
+                // Follow-host: show the host's translation verbatim so
+                // both screens agree. Override: show viewer's local
+                // re-translation when available, otherwise fall back to
+                // host's so the user never sees an empty card.
+                const targetText = followHost
+                  ? u.translatedText
+                  : (u.viewerTranslatedText ?? u.translatedText);
                 const targetFontPx = isLive
                   ? liveTargetFontPx
                   : finalTargetFontPx;
