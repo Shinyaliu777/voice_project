@@ -534,43 +534,13 @@ export function LiveShareViewer({
     return () => clearInterval(id);
   }, []);
 
-  // -------- segment reconciliation poll --------
-  // SSE is best-effort: the host's push is fire-and-forget (now with 1
-  // retry, but still), nginx may briefly drop chunks, and broadcaster is
-  // in-memory in single-instance deploys (events fired while no viewer
-  // was subscribed are lost). Reconcile against the persisted DB every
-  // 30 s to recover any utterance the viewer missed. This is read-only
-  // and cheap (segments are paginated by index in DB).
-  React.useEffect(() => {
-    let cancelled = false;
-    const reconcile = async () => {
-      try {
-        const res = await fetch(
-          `/api/live-share/${encodeURIComponent(token)}/segments`,
-          { cache: "no-store" }
-        );
-        if (!res.ok) return;
-        const json = (await res.json()) as { items?: SegmentDTO[] };
-        if (cancelled || !Array.isArray(json.items)) return;
-        // Replay each segment through the existing reducer; it dedupes
-        // by (speaker, startMs) tolerance window so already-known
-        // segments are no-ops.
-        for (const seg of json.items) {
-          dispatch({ type: "segment", value: seg });
-        }
-      } catch {
-        /* network blip — try again on next tick */
-      }
-    };
-    // First reconcile on a slight delay so SSE joined event lands first.
-    const initial = setTimeout(reconcile, 3000);
-    const id = setInterval(reconcile, 30_000);
-    return () => {
-      cancelled = true;
-      clearTimeout(initial);
-      clearInterval(id);
-    };
-  }, [token]);
+  // Note: there used to be a 30s segments-reconcile poll here as a safety
+  // net for dropped SSE events, but for a live-subtitle product 30 s is
+  // unusable — by the time a missed line appears the conversation has
+  // moved on. The viewer now relies entirely on the host's push (with
+  // 1× retry on the recorder side) + the SSE feed. If anything is lost,
+  // it's lost; nginx buffering + push retry are where reliability is
+  // actually fought. See docs/LIVE_SHARE_OPS.md.
 
   // -------- viewer-side re-translation --------
   // When the viewer changes language OR re-enables follow-host: wipe
