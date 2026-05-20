@@ -7,10 +7,19 @@ import { Recorder } from "@/components/Recorder";
 import { cn } from "@/lib/utils";
 
 interface RecorderLaneProps {
-  defaultSourceLang: string;
-  defaultTargetLang: string;
+  /** All optional — Recorder.tsx has its own internal defaults (en / zh)
+   *  and a blank title. RecorderLane prefers values from
+   *  /api/user/settings (defaultSourceLang / defaultTargetLang under
+   *  the 通用 tab in SettingsDialog) so users who routinely record in
+   *  a non-default language don't have to set it every time. Falls
+   *  back to props (currently unused) then to Recorder's internal
+   *  en/zh defaults. */
+  defaultSourceLang?: string;
+  defaultTargetLang?: string;
   defaultTitle?: string;
 }
+
+const LANG_CACHE_KEY = "voice-project:lastLangPair";
 
 /**
  * Keeps the Recorder mounted at the layout level so audio capture,
@@ -40,14 +49,74 @@ interface RecorderLaneProps {
  * This path is for in-tab client navigation.
  */
 export function RecorderLane({
-  defaultSourceLang,
-  defaultTargetLang,
+  defaultSourceLang: propSrc,
+  defaultTargetLang: propTgt,
   defaultTitle,
 }: RecorderLaneProps) {
   const pathname = usePathname();
   // Recorder UI is the /dashboard landing page. Any other dashboard
   // sub-route hides it but keeps the React subtree mounted.
   const visible = pathname === "/dashboard";
+
+  // Resolve default language pair from the most authoritative source
+  // we have. Synchronously read localStorage on first render so the
+  // Recorder mounts immediately with the right defaults; then fetch
+  // /api/user/settings to refresh the cache for next time. Recorder's
+  // own useState locks the initial values, so this avoids the
+  // "everyone gets en/zh on first mount" regression that came with
+  // dropping the per-navigation prisma lookup.
+  const [defaults] = React.useState(() => {
+    if (typeof window === "undefined") {
+      return { src: propSrc ?? "en", tgt: propTgt ?? "zh" };
+    }
+    try {
+      const cached = window.localStorage.getItem(LANG_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached) as { src?: string; tgt?: string };
+        if (parsed.src && parsed.tgt) {
+          return { src: parsed.src, tgt: parsed.tgt };
+        }
+      }
+    } catch {
+      /* ignore corrupt cache */
+    }
+    return { src: propSrc ?? "en", tgt: propTgt ?? "zh" };
+  });
+
+  // Refresh the localStorage cache from user.settings (single source
+  // of truth, written by SettingsDialog). Only affects the NEXT
+  // mount — current Recorder keeps its locked defaults.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/api/user/settings");
+        if (!resp.ok || cancelled) return;
+        const data = (await resp.json()) as {
+          settings?: { defaultSourceLang?: string; defaultTargetLang?: string };
+        };
+        const s = data.settings ?? {};
+        if (s.defaultSourceLang && s.defaultTargetLang) {
+          try {
+            window.localStorage.setItem(
+              LANG_CACHE_KEY,
+              JSON.stringify({
+                src: s.defaultSourceLang,
+                tgt: s.defaultTargetLang,
+              })
+            );
+          } catch {
+            /* ignore quota errors */
+          }
+        }
+      } catch {
+        /* ignore — defaults already applied */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div
@@ -59,8 +128,8 @@ export function RecorderLane({
     >
       <div className="mx-auto flex h-[calc(100vh-3rem)] max-w-3xl flex-col px-3 py-4 sm:max-w-4xl sm:px-4 sm:py-6 md:max-w-5xl md:px-6 lg:px-8">
         <Recorder
-          defaultSourceLang={defaultSourceLang}
-          defaultTargetLang={defaultTargetLang}
+          defaultSourceLang={defaults.src}
+          defaultTargetLang={defaults.tgt}
           defaultTitle={defaultTitle}
         />
       </div>

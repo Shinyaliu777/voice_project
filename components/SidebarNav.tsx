@@ -27,7 +27,6 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 import { UserMenuBadge } from "@/components/UserMenuBadge";
 import { SidebarChatHistory } from "@/components/SidebarChatHistory";
 
-const THEME_STORAGE_KEY = "voice-project:theme";
 
 export interface SidebarNavProps {
   userName?: string;
@@ -144,34 +143,70 @@ export function SidebarNav({
   const initial = (userInitial ?? userName.charAt(0) ?? "U").toUpperCase();
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
-  // ---- theme (dark / light) ----
-  // Hydrate from localStorage on mount so a previously-chosen dark mode
-  // sticks across reloads. We default to undefined (= use whatever the
-  // <html> class already has) and flip the class on click. globals.css
-  // ships both :root and .dark CSS-vars, so Tailwind dark: utilities
-  // throughout the app respond immediately to the class toggle.
+  // ---- user preferences (theme + font size) ----
+  // SidebarNav is the one client component guaranteed to be mounted
+  // everywhere in the app shell, so it doubles as the global "apply
+  // user.settings" hook. Single source of truth is /api/user/settings
+  // (the same source SettingsDialog writes to), which keeps the
+  // bottom-bar toggle and the Settings dialog in sync — earlier they
+  // diverged because the toggle wrote localStorage while the dialog
+  // wrote user.settings.theme.
   const [isDark, setIsDark] = React.useState(false);
   React.useEffect(() => {
     if (typeof document === "undefined") return;
-    const stored =
-      typeof window !== "undefined"
-        ? window.localStorage.getItem(THEME_STORAGE_KEY)
-        : null;
-    const initiallyDark =
-      stored === "dark" || document.documentElement.classList.contains("dark");
-    document.documentElement.classList.toggle("dark", initiallyDark);
-    setIsDark(initiallyDark);
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/api/user/settings");
+        if (!resp.ok || cancelled) return;
+        const data = (await resp.json()) as {
+          settings?: { theme?: string; fontSize?: number };
+        };
+        const s = data.settings ?? {};
+        // theme — "light" / "dark" / "system" (= follow OS pref)
+        const root = document.documentElement;
+        if (s.theme === "dark") {
+          root.classList.add("dark");
+        } else if (s.theme === "light") {
+          root.classList.remove("dark");
+        } else if (typeof window !== "undefined" && window.matchMedia) {
+          // "system" or unset — follow OS
+          const prefersDark = window.matchMedia(
+            "(prefers-color-scheme: dark)"
+          ).matches;
+          root.classList.toggle("dark", prefersDark);
+        }
+        setIsDark(root.classList.contains("dark"));
+        // font size — apply to html so all rem-based Tailwind sizes scale
+        if (
+          typeof s.fontSize === "number" &&
+          s.fontSize >= 10 &&
+          s.fontSize <= 22
+        ) {
+          root.style.fontSize = `${s.fontSize}px`;
+        }
+      } catch {
+        /* ignore — falls back to OS preference / defaults */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const toggleTheme = React.useCallback(() => {
     if (typeof document === "undefined") return;
     const next = !document.documentElement.classList.contains("dark");
     document.documentElement.classList.toggle("dark", next);
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light");
-    } catch {
-      /* ignore quota / private-mode errors */
-    }
     setIsDark(next);
+    // Persist to user.settings so SettingsDialog stays in sync and
+    // the preference survives reloads + cross-device sign-in.
+    void fetch("/api/user/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ theme: next ? "dark" : "light" }),
+    }).catch(() => {
+      /* best-effort — class is already applied client-side */
+    });
   }, []);
 
   return (

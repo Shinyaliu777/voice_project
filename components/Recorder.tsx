@@ -664,8 +664,66 @@ export function Recorder({
     });
   }, [state.order, state.byId]);
 
+  // Pull user-controlled bits out of /api/user/settings in one shot.
+  // - floatingMaxHistoryItems: drives the slice into floatingItems below.
+  //   Default 50 covers a multi-minute teleprompter view.
+  // - desktopNotifications: gates whether we fire a Notification when
+  //   the recording transitions to "ended". The Notification.permission
+  //   grant is requested in SettingsDialog when the toggle is flipped,
+  //   so by the time we're here it's either granted or the user opted
+  //   not to enable the toggle at all.
+  const [floatingMaxHistory, setFloatingMaxHistory] = React.useState(50);
+  const desktopNotifyEnabledRef = React.useRef(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/api/user/settings");
+        if (!resp.ok || cancelled) return;
+        const data = (await resp.json()) as {
+          settings?: {
+            floatingMaxHistoryItems?: number;
+            desktopNotifications?: boolean;
+          };
+        };
+        const n = Number(data.settings?.floatingMaxHistoryItems);
+        if (Number.isFinite(n) && n >= 1 && n <= 200) {
+          setFloatingMaxHistory(n);
+        }
+        desktopNotifyEnabledRef.current = Boolean(
+          data.settings?.desktopNotifications
+        );
+      } catch {
+        /* keep defaults */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fire desktop notification when a recording finalizes — the user
+  // can be in a different tab when this happens (especially after our
+  // Bug #8 fix where the recorder lives on across in-tab navigation),
+  // so this is genuinely useful rather than redundant with the
+  // in-page toast.
+  const lastNotifiedStatusRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (state.status !== "ended") return;
+    if (lastNotifiedStatusRef.current === state.status) return;
+    lastNotifiedStatusRef.current = state.status;
+    if (!desktopNotifyEnabledRef.current) return;
+    void import("@/lib/notifications").then(({ notifyDesktop }) => {
+      notifyDesktop("录音已完成", {
+        body: "转写和上传已结束，可在历史记录中查看。",
+        icon: "/favicon.ico",
+        tag: "voice-project-recording-ended",
+      });
+    });
+  }, [state.status]);
+
   const floatingItems = React.useMemo(() => {
-    const tail = orderedIds.slice(-50);
+    const tail = orderedIds.slice(-floatingMaxHistory);
     return tail
       .map((id) => state.byId[id])
       .filter(Boolean)
@@ -675,7 +733,7 @@ export function Recorder({
         translatedText: u.translatedText ?? "",
         isLive: !u.isFinal && idx === arr.length - 1,
       }));
-  }, [orderedIds, state.byId]);
+  }, [orderedIds, state.byId, floatingMaxHistory]);
 
   const showTranslation = translationMode !== "off";
   const recording = state.status === "recording";

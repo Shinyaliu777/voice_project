@@ -132,16 +132,37 @@ export function SettingsDialog({
     [loaded, queuePatch]
   );
 
-  // Apply theme preference locally for immediate feedback
+  // Apply theme preference locally for immediate feedback. globals.css
+  // only knows about `.dark` (no `.light` class), and the
+  // @custom-variant matches `.dark` exactly, so "light" is just the
+  // absence of the dark class — strip it explicitly. For "system" we
+  // mirror the OS preference so the toggle behaves the same as a fresh
+  // load with no user override.
   React.useEffect(() => {
     if (!loaded) return;
     if (typeof document === "undefined") return;
     const root = document.documentElement;
-    root.classList.remove("light", "dark");
-    if (settings.theme === "light") root.classList.add("light");
-    else if (settings.theme === "dark") root.classList.add("dark");
-    // "system" — strip classes, let prefers-color-scheme handle it
+    if (settings.theme === "dark") {
+      root.classList.add("dark");
+    } else if (settings.theme === "light") {
+      root.classList.remove("dark");
+    } else if (typeof window !== "undefined" && window.matchMedia) {
+      const prefersDark = window.matchMedia(
+        "(prefers-color-scheme: dark)"
+      ).matches;
+      root.classList.toggle("dark", prefersDark);
+    }
   }, [settings.theme, loaded]);
+
+  // Apply body font size — every Tailwind rem-based text utility (text-sm,
+  // text-base, text-lg, ...) scales relative to html font-size, so a
+  // single style assignment here propagates everywhere. Without this the
+  // 字号 slider just stored a number nobody read.
+  React.useEffect(() => {
+    if (!loaded) return;
+    if (typeof document === "undefined") return;
+    document.documentElement.style.fontSize = `${settings.fontSize}px`;
+  }, [settings.fontSize, loaded]);
 
   return (
     <Dialog open={isOpen} onOpenChange={setOpen}>
@@ -250,7 +271,20 @@ export function SettingsDialog({
               label="桌面通知"
               hint="后台运行时在桌面右上角弹出提示"
               checked={settings.desktopNotifications}
-              onCheckedChange={(v) => update("desktopNotifications", v)}
+              onCheckedChange={async (v) => {
+                if (v) {
+                  // Permission must be requested in a user-gesture
+                  // handler. If the user denied it (or the API is
+                  // missing) keep the toggle visually off and stop
+                  // here — turning it on without permission means
+                  // notifyDesktop() can never fire.
+                  const { requestDesktopNotificationPermission } =
+                    await import("@/lib/notifications");
+                  const perm = await requestDesktopNotificationPermission();
+                  if (perm !== "granted") return;
+                }
+                update("desktopNotifications", v);
+              }}
             />
           </TabsContent>
 

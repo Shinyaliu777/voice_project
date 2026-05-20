@@ -135,10 +135,36 @@ export async function POST(
     );
   }
 
+  // Output language priority:
+  //   1. body.language — explicit per-request override
+  //   2. user.settings.contentLang — global preference set in
+  //      SettingsDialog "通用 → 内容语言" (used to be stored but
+  //      never read; this is what makes that setting actually work)
+  //   3. session.targetLang — what the recording was set up to
+  //      translate INTO, used as the natural fallback
+  let outputLang = body.language ?? null;
+  if (!outputLang) {
+    try {
+      const userRow = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { settings: true },
+      });
+      const s = (userRow?.settings ?? null) as
+        | { contentLang?: string }
+        | null;
+      if (s?.contentLang && typeof s.contentLang === "string") {
+        outputLang = s.contentLang;
+      }
+    } catch {
+      /* fall through to targetLang */
+    }
+  }
+  if (!outputLang) outputLang = session.targetLang;
+
   const messages = buildMinutesPrompt({
     segments: segments.map(toSegmentDTO),
     sourceLang: session.sourceLang,
-    targetLang: body.language ?? session.targetLang,
+    targetLang: outputLang,
     styleHint: body.styleHint,
   });
 
