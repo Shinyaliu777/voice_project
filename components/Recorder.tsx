@@ -631,11 +631,34 @@ export function Recorder({
   elapsedRef.current = elapsedMs;
   const getCurrentMs = React.useCallback(() => elapsedRef.current, []);
 
-  // Scrolling history for the floating subtitle window — last few finalized
-  // utterances + the live one. Newest last so the PiP can keep scrolling to
-  // the bottom and behave like a teleprompter.
+  // Scrolling history for the floating subtitle window. We send a much
+  // longer tail than what's visible at once — the PiP window has its
+  // own overflow-y scroller, and at the previous slice(-6) the window
+  // looked nearly empty no matter how tall the user dragged it (user
+  // reported "再大也就那么几行"). 50 items covers a multi-minute
+  // teleprompter view; FloatingSubtitleWindow CSS pins to the bottom
+  // and the scroller handles overflow.
+  //
+  // Order by audio startMs so multi-speaker turns render in the order
+  // the speech actually happened. Soniox emits per-speaker utterances
+  // interleaved (Speaker-1's u4 can land in state.order BEFORE
+  // Speaker-2's u3 even though u3 started earlier on the audio
+  // timeline), and the prior insertion-order pass produced the
+  // "句子顺序还是不对" the user reported for two-speaker dialogue.
+  const orderedIds = React.useMemo(() => {
+    return [...state.order].sort((a, b) => {
+      const ua = state.byId[a];
+      const ub = state.byId[b];
+      if (!ua || !ub) return 0;
+      if (ua.startMs !== ub.startMs) return ua.startMs - ub.startMs;
+      // Stable tiebreaker so the LIVE card always falls below its prior
+      // twin within the same startMs bucket.
+      return a.localeCompare(b);
+    });
+  }, [state.order, state.byId]);
+
   const floatingItems = React.useMemo(() => {
-    const tail = state.order.slice(-6);
+    const tail = orderedIds.slice(-50);
     return tail
       .map((id) => state.byId[id])
       .filter(Boolean)
@@ -645,7 +668,7 @@ export function Recorder({
         translatedText: u.translatedText ?? "",
         isLive: !u.isFinal && idx === arr.length - 1,
       }));
-  }, [state.order, state.byId]);
+  }, [orderedIds, state.byId]);
 
   const showTranslation = translationMode !== "off";
   const recording = state.status === "recording";
@@ -656,6 +679,11 @@ export function Recorder({
   // transport pill at the bottom — so we lift the split out of UtteranceList
   // and place LiveCard as its own sibling further down.
   const { liveUtterance, finalIds, multiSpeaker } = React.useMemo(() => {
+    // The live utterance is the most recently emitted non-final one.
+    // Use insertion order here, NOT startMs — when two speakers talk
+    // simultaneously we want the freshest "still-typing" card to power
+    // the LIVE block, not the one that started earliest on the audio
+    // timeline.
     let liveId: string | null = null;
     for (let i = state.order.length - 1; i >= 0; i--) {
       const u = state.byId[state.order[i]];
@@ -664,9 +692,13 @@ export function Recorder({
         break;
       }
     }
+    // Transcript history is rendered top-to-bottom in audio-timeline
+    // order. orderedIds is the startMs-sorted view used elsewhere; we
+    // filter the live id out so it doesn't double-render (LiveCard
+    // already shows it as the bottom sticky block).
     const finals = liveId
-      ? state.order.filter((id) => id !== liveId)
-      : state.order;
+      ? orderedIds.filter((id) => id !== liveId)
+      : orderedIds;
     const live = liveId ? state.byId[liveId] ?? null : null;
     const speakers = new Set<number>();
     for (const id of finals) {
@@ -679,7 +711,7 @@ export function Recorder({
       finalIds: finals,
       multiSpeaker: speakers.size > 1,
     };
-  }, [state.order, state.byId]);
+  }, [state.order, state.byId, orderedIds]);
 
   const hasHistory = finalIds.length > 0;
   const showLiveCard = liveUtterance !== null || recording;
