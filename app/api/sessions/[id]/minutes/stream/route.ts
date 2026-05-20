@@ -313,8 +313,10 @@ export async function POST(
         for await (const delta of llm.stream(messages, {
           model: minutesModel,
           responseFormat: "json",
-          // DeepSeek caps max_tokens at 8192 regardless of model.
-          maxTokens: 8192,
+          // DeepSeek v4-* models cap at 384K; 16384 leaves comfortable
+          // headroom for a long meeting (~15 sections) without ever
+          // truncating mid-narrative.
+          maxTokens: 16384,
         })) {
           if (!delta) continue;
           buffer += delta;

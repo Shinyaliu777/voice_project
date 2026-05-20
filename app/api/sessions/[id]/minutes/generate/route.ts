@@ -137,10 +137,13 @@ export async function POST(
     raw = await llm.generate(messages, {
       model: minutesModel,
       responseFormat: "json",
-      // DeepSeek caps max_tokens at 8192 regardless of model; anything
-      // higher is silently clamped. 8192 ≈ 12-16k Chinese chars, enough
-      // for 8 narrative sections + summary.
-      maxTokens: 8192,
+      // DeepSeek v4-flash / v4-pro both cap max_tokens at 384K — this
+      // ceiling is generous, not the limiter. 16384 just buys safety
+      // headroom: an 8-section narrative with 400 Chinese chars per
+      // section + a 200-char summary lands around 5-6k tokens, so 16k
+      // leaves plenty of room for a long meeting (15+ sections) without
+      // ever truncating.
+      maxTokens: 16384,
     });
   } catch (err) {
     return NextResponse.json(
