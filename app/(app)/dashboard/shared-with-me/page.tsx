@@ -46,7 +46,7 @@ export default function SharedWithMePage() {
   };
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-3xl flex-col items-center justify-center px-6 py-12 text-center">
+    <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-full flex-col items-center justify-center px-3 py-10 text-center sm:max-w-3xl sm:px-4 md:px-6 md:py-12 lg:px-8">
       {/* Illustration block — three stacked share icons with a soft halo */}
       <div className="relative mb-8">
         <div className="absolute inset-0 -z-10 m-auto h-32 w-32 rounded-full bg-zinc-200/60 blur-2xl dark:bg-zinc-700/40" />

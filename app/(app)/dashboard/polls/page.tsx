@@ -119,7 +119,7 @@ export default function PollsPage() {
 
   if (loading) {
     return (
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-3xl flex-col items-center justify-center px-6 py-12 text-center">
+      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-full flex-col items-center justify-center px-3 py-10 text-center sm:max-w-3xl sm:px-4 md:px-6 md:py-12 lg:px-8">
         <Loader2 className="mb-4 h-6 w-6 animate-spin text-zinc-400" />
         <p className="text-sm text-zinc-500">加载投票中…</p>
       </div>
@@ -128,7 +128,7 @@ export default function PollsPage() {
 
   if (error && polls.length === 0) {
     return (
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-3xl flex-col items-center justify-center px-6 py-12 text-center">
+      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-full flex-col items-center justify-center px-3 py-10 text-center sm:max-w-3xl sm:px-4 md:px-6 md:py-12 lg:px-8">
         <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-100 text-zinc-400">
           <Vote className="h-7 w-7" />
         </div>
@@ -139,7 +139,7 @@ export default function PollsPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-10">
+    <div className="mx-auto flex max-w-full flex-col gap-6 px-3 py-6 sm:max-w-3xl sm:px-4 md:px-6 md:py-8 lg:px-8 lg:py-10">
       <header className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
           <Vote className="h-5 w-5" />

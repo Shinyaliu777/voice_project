@@ -48,7 +48,7 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
   );
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-3 py-6 sm:max-w-4xl sm:px-4 md:max-w-5xl md:px-6 md:py-8 lg:max-w-6xl lg:px-8 2xl:max-w-7xl">
       <AppHeader title="历史记录" subtitle="管理你的所有录音和文件夹" />
 
       <section className="mb-10">

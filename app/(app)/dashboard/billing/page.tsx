@@ -46,7 +46,7 @@ export default async function BillingPage() {
     sub?.planId ?? plans.find((p) => p.isDefault)?.id ?? plans[0]?.id;
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-3 py-6 sm:px-4 md:max-w-4xl md:px-6 md:py-8 lg:px-8">
       <div className="mb-6">
         <Link
           href="/dashboard"

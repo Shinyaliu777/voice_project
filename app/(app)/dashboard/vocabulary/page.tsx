@@ -39,7 +39,7 @@ export default async function VocabularyPage() {
   const hasDocuments = groups.length > 0;
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-3 py-6 sm:max-w-4xl sm:px-4 md:max-w-5xl md:px-6 md:py-8 lg:px-8">
       <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           词汇本

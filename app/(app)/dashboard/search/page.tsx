@@ -42,7 +42,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
 
   if (!q) {
     return (
-      <div className="mx-auto max-w-3xl px-6 py-8">
+      <div className="mx-auto max-w-full px-3 py-6 sm:max-w-3xl sm:px-4 md:px-6 md:py-8 lg:px-8">
         <h1 className="text-2xl font-semibold tracking-tight">搜索</h1>
         <p className="mt-2 text-sm text-zinc-500">在顶部输入关键词，搜索录音标题和转录片段。</p>
       </div>
@@ -73,7 +73,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
   const total = titleHits.length + segmentHits.length;
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-full px-3 py-6 sm:max-w-3xl sm:px-4 md:px-6 md:py-8 lg:px-8">
       <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">
           搜索结果：<span className="font-mono">{q}</span>

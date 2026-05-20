@@ -51,7 +51,7 @@ export default async function DashboardPage() {
   const initialSession = unfinished ? toSessionDTO(unfinished) : undefined;
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-3rem)] max-w-5xl flex-col px-6 py-6">
+    <div className="mx-auto flex h-[calc(100vh-3rem)] max-w-3xl flex-col px-3 py-4 sm:max-w-4xl sm:px-4 sm:py-6 md:max-w-5xl md:px-6 lg:px-8">
       <Recorder
         defaultSourceLang={initialSession?.sourceLang ?? "en"}
         defaultTargetLang={initialSession?.targetLang ?? "zh"}

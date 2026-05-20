@@ -19,7 +19,7 @@ export default async function VocabularyFlashcardsReviewPage() {
   const cards: FlashcardDTO[] = dueRows.map(toFlashcardDTO);
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
+    <div className="mx-auto max-w-full px-3 py-6 sm:max-w-3xl sm:px-4 md:px-6 md:py-8 lg:px-8 lg:py-10">
       <header className="mb-8 text-center">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
           闪卡复习
