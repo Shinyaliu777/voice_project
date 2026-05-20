@@ -53,17 +53,27 @@ async function resolvePlanForUser(userId: string) {
 }
 
 /**
- * Minutes of finalized recording in the current calendar month.
- * Uses Session.durationMs (set by /api/audio/finalize) — recordings still
- * in progress don't count yet, which matches the "you can start it before
- * checking quota" intent. Quota is checked at start time using THIS function
- * so an over-quota user can't start a NEW recording while their previous
- * one isn't yet finalized — but a single recording can run as long as it
- * wants. Good enough for Phase 2.1.
+ * Minutes of recording consumed by this user in the current calendar
+ * month. Includes BOTH finalized sessions and any in-flight session's
+ * uploaded chunks, so a user can't dodge their quota by simply never
+ * pressing "结束录制" — every 3-second chunk that's already on disk
+ * counts as consumed time.
+ *
+ * Two sources, additive (they don't overlap because Session.durationMs
+ * is null until /api/audio/finalize sets it):
+ *   1. Session.durationMs  for sessions where finalize completed.
+ *   2. sum(AudioChunk.durationMs)  for sessions still in progress.
+ *
+ * Time window is Session.createdAt so a recording started in May and
+ * finalized in June consistently counts as "May usage" — picking the
+ * earlier of the two timestamps avoids double-counting around month
+ * boundaries.
  */
 async function getRecordingMinutesUsedThisMonth(userId: string): Promise<number> {
   const since = startOfCurrentMonth();
-  const rows = await prisma.session.findMany({
+
+  // 1. Finalized sessions — durationMs is authoritative.
+  const finalized = await prisma.session.findMany({
     where: {
       userId,
       durationMs: { not: null },
@@ -71,7 +81,30 @@ async function getRecordingMinutesUsedThisMonth(userId: string): Promise<number>
     },
     select: { durationMs: true },
   });
-  const totalMs = rows.reduce((acc, r) => acc + (r.durationMs ?? 0), 0);
+  let totalMs = finalized.reduce((acc, r) => acc + (r.durationMs ?? 0), 0);
+
+  // 2. In-flight sessions — sum the chunks that have already landed.
+  //    Without this branch, an unstopped recording costs 0 quota until
+  //    the user clicks "结束录制" (which they might never do — auto
+  //    save on tab close goes to status=idle with durationMs still null
+  //    too). The user reported "本月录音这个数肯定不准" and this is
+  //    almost certainly why.
+  const inflight = await prisma.session.findMany({
+    where: {
+      userId,
+      durationMs: null,
+      createdAt: { gte: since },
+    },
+    select: { id: true },
+  });
+  if (inflight.length > 0) {
+    const chunkAgg = await prisma.audioChunk.aggregate({
+      where: { sessionId: { in: inflight.map((s) => s.id) } },
+      _sum: { durationMs: true },
+    });
+    totalMs += chunkAgg._sum.durationMs ?? 0;
+  }
+
   return Math.round(totalMs / 60_000);
 }
 
