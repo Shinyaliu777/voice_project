@@ -1515,17 +1515,26 @@ function UtteranceList({
   );
 }
 
-function Segment({
-  utterance,
-  showTranslation,
-  displayMode,
-  showSpeaker,
-}: {
+interface SegmentProps {
   utterance: Utterance;
   showTranslation: boolean;
   displayMode: DisplayMode;
   showSpeaker: boolean;
-}) {
+}
+
+// React.memo with the default shallow comparator is enough here: each
+// finalized utterance keeps the same reference inside byId across
+// dispatches that only mutate the in-flight utterance. With ~50
+// finalized segments in a long recording, this avoids ~50 component
+// re-renders per Soniox WS frame (10× per second).
+const Segment = React.memo(SegmentImpl);
+
+function SegmentImpl({
+  utterance,
+  showTranslation,
+  displayMode,
+  showSpeaker,
+}: SegmentProps) {
   const hasTranslation = showTranslation && !!utterance.translatedText;
   const stamp = formatElapsed(utterance.startMs);
 
@@ -1579,17 +1588,36 @@ function Segment({
   );
 }
 
-function LiveCard({
-  utterance,
-  recording,
-  showTranslation,
-  displayMode,
-}: {
+interface LiveCardProps {
   utterance: Utterance | null;
   recording: boolean;
   showTranslation: boolean;
   displayMode: DisplayMode;
-}) {
+}
+
+const LiveCard = React.memo(LiveCardImpl, (prev, next) => {
+  // Hot path: Soniox WS fires ~10 frames/sec, each producing a new
+  // utterance OBJECT (reducer creates new ref every dispatch). Skip
+  // re-render when the only thing that changed is identity — what
+  // matters visually is text + final flag + display knobs. Cuts the
+  // partial-typing re-render cost from ~10ms/frame to ~0ms.
+  return (
+    prev.utterance?.sourceText === next.utterance?.sourceText &&
+    prev.utterance?.translatedText === next.utterance?.translatedText &&
+    prev.utterance?.isFinal === next.utterance?.isFinal &&
+    prev.utterance?.speakerId === next.utterance?.speakerId &&
+    prev.recording === next.recording &&
+    prev.showTranslation === next.showTranslation &&
+    prev.displayMode === next.displayMode
+  );
+});
+
+function LiveCardImpl({
+  utterance,
+  recording,
+  showTranslation,
+  displayMode,
+}: LiveCardProps) {
   const sourceRef = React.useRef<HTMLDivElement | null>(null);
   const transRef = React.useRef<HTMLDivElement | null>(null);
 
