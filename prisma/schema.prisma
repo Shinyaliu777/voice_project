@@ -19,6 +19,11 @@ model User {
   avatarUrl     String?
   /// Free-form per-user UI/notification/floating-window preferences (JSON blob)
   settings      Json?
+  /// Maximum concurrent recording slots ("active" RecordingSlot rows)
+  /// this user may hold. Free plan = 1, future paid plans bump this via
+  /// /api/recording/start logic. Stored on the user for now; once Stripe
+  /// ships, derive from Subscription.plan in the route handler.
+  maxConcurrentRecordings Int @default(1)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -29,6 +34,7 @@ model User {
   liveShareSessions LiveShareSession[]
   polls             Poll[]
   pollVotes         PollVote[]
+  recordingSlots    RecordingSlot[]
 
   // ---- NextAuth -----------------------------------------------------
   // We use JWT session strategy so there's no separate Session table
@@ -430,4 +436,34 @@ model PollVote {
   @@unique([pollId, voterId])
   @@index([pollId])
   @@index([voterId])
+}
+
+/// Recording concurrency control.
+///
+/// One row per attempt to start recording. `status="active"` slots count
+/// against the user's `maxConcurrentRecordings` cap; `status="queued"`
+/// slots wait in FIFO order (by `queuePosition`) for a slot to free up.
+///
+/// `claimedAt` is the time the slot was created (queued or active).
+/// `releasedAt` is set when the slot is released — kept around briefly
+/// so the server can detect "previous session ended" on the next start.
+///
+/// The associated `sessionId` is optional because a queued slot may not
+/// yet have a Session row (we only create one once the slot is promoted
+/// to active and the client is told to proceed).
+model RecordingSlot {
+  id            String    @id @default(cuid())
+  userId        String
+  sessionId     String?
+  /// "active" — holds a real recording slot; counts against maxConcurrent.
+  /// "queued" — waiting for a slot; promoted to "active" when one frees.
+  status        String
+  /// 1-indexed position in the user's wait line. Only set when status="queued".
+  queuePosition Int?
+  claimedAt     DateTime  @default(now())
+  releasedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
 }
