@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Switch Tailwind v4's `dark:` variant from the default
+   `prefers-color-scheme: dark` media query to a `.dark` class on any
+   ancestor. Without this, the SidebarNav theme toggle (which writes
+   .dark to <html>) flipped the CSS-vars block below but every
+   component-level `dark:bg-*` / `dark:text-*` utility stayed inert —
+   they were waiting on the OS-level color scheme, not our class. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
     /* Surfaces — neutral, near-white background with near-black foreground */
