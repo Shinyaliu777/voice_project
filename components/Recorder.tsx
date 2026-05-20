@@ -556,10 +556,17 @@ export function Recorder({
         setMinutesStatus("idle");
       } catch (err) {
         if (ctrl.signal.aborted) return;
-        setMinutesStatus("error");
-        // Auto-refresh failures (LLM quota etc.) shouldn't spam toasts — the
-        // user didn't ask for this run. Manual clicks still get the toast.
-        if (!silent) {
+        // Silent / background auto-refresh failures (DeepSeek returns
+        // non-JSON about once every few dozen calls per its own docs)
+        // shouldn't lock the UI in an "error" state — the next 2000-char
+        // accumulation will trigger another refresh automatically and
+        // usually succeeds. Only manual clicks land in the error state +
+        // toast; silent auto-runs reset to idle so the next trigger isn't
+        // gated on `minutesStatus !== "streaming"`.
+        if (silent) {
+          setMinutesStatus("idle");
+        } else {
+          setMinutesStatus("error");
           toast.error(err instanceof Error ? err.message : "纪要生成失败");
         }
       }

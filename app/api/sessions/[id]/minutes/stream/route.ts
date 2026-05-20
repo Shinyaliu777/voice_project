@@ -478,29 +478,58 @@ async function handleIncrementalStream(
       const send = (evt: MinutesStreamEvent) =>
         controller.enqueue(enc.encode(`data: ${JSON.stringify(evt)}\n\n`));
 
-      try {
-        // Use non-streaming generate — output is small (one JSON object) and
-        // partial-JSON parsing complicates the consumer. Latency hit is
-        // negligible (~200-500ms) vs the simplicity gained.
-        const raw = await llm.generate(messages, {
-          model: incrementalModel,
-          responseFormat: "json",
-          maxTokens: 1024,
-        });
+      // Robust LLM call: DeepSeek's own docs warn "the API may
+      // occasionally return empty content" in JSON output mode, and
+      // we've seen v4-pro produce stray non-JSON about once per few
+      // dozen incremental calls. Retry once with a 200ms backoff
+      // before surfacing an error — it almost always succeeds on the
+      // second try.
+      const tryParse = (raw: string): unknown => {
         const stripped = raw
           .trim()
           .replace(/^```(?:json)?\s*/i, "")
           .replace(/```\s*$/i, "");
-        let parsed: unknown;
+        if (!stripped) return null;
         try {
-          parsed = JSON.parse(stripped);
+          return JSON.parse(stripped);
         } catch {
           const s = stripped.indexOf("{");
           const e = stripped.lastIndexOf("}");
-          parsed = s >= 0 && e > s ? JSON.parse(stripped.slice(s, e + 1)) : null;
+          if (s < 0 || e <= s) return null;
+          try {
+            return JSON.parse(stripped.slice(s, e + 1));
+          } catch {
+            return null;
+          }
         }
-        if (!parsed || typeof parsed !== "object") {
-          throw new Error("LLM returned non-JSON");
+      };
+
+      let parsed: unknown = null;
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        try {
+          const raw = await llm.generate(messages, {
+            model: incrementalModel,
+            responseFormat: "json",
+            maxTokens: 1024,
+          });
+          const candidate = tryParse(raw);
+          if (candidate && typeof candidate === "object") {
+            parsed = candidate;
+          } else {
+            lastError = new Error("LLM returned non-JSON");
+          }
+        } catch (err) {
+          lastError = err;
+        }
+      }
+
+      try {
+        if (!parsed) {
+          throw lastError ?? new Error("LLM returned non-JSON");
         }
         const obj = parsed as Record<string, unknown>;
         const ct = (obj.currentTopic ?? {}) as Record<string, unknown>;
