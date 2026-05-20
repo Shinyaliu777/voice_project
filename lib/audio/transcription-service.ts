@@ -791,6 +791,12 @@ export class TranscriptionService {
         this.config.enableSpeakerDiarization ?? true,
       enable_endpoint_detection: true,
       language_hints: [this.config.sourceLanguage],
+      // Strict mode: stay within the hinted source language (and the
+      // two_way target if translation is enabled). Override with
+      // NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT=0 if your users
+      // code-switch heavily.
+      language_hints_strict:
+        process.env.NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT !== "0",
     };
     if (this.config.transcriptionContext) {
       initConfig.context = this.config.transcriptionContext;

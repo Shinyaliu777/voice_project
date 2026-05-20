@@ -869,9 +869,14 @@ export class Recorder {
         this.config.enableSpeakerDiarization ?? true,
       enable_endpoint_detection: true,
       // Single language hint — the source. Soniox auto-detects the other side
-      // of a two-way translation pair. Strict hints would block borderline
-      // pronunciation and stall the stream, so leave at default (off).
+      // of a two-way translation pair. Match lecsync's strict mode: rejects
+      // utterances in unhinted languages, keeping transcription focused on
+      // the source ↔ target pair. Trade-off: heavy code-switching speakers
+      // (Mandarin/English/Cantonese mixed within one sentence) may see some
+      // tokens dropped. Users can override via NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT=0.
       language_hints: [this.config.sourceLanguage],
+      language_hints_strict:
+        process.env.NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT !== "0",
     };
     if (this.config.transcriptionContext) {
       initConfig.context = this.config.transcriptionContext;
