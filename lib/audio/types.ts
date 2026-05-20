@@ -52,6 +52,8 @@ export interface UtteranceBuilder {
   endMs: number;
   sourceFinal: string;
   sourcePending: string;
+  consumedSourcePending: string;
   transFinal: string;
   transPending: string;
+  consumedTransPending: string;
 }

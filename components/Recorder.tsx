@@ -1107,6 +1107,7 @@ function Segment({
       : displayMode === "balanced"
       ? "text-sm md:text-base text-zinc-700 dark:text-zinc-200"
       : "text-sm text-zinc-500 dark:text-zinc-400";
+  const textWrapClass = "whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
 
   return (
     <div className="group/segment relative space-y-1.5">
@@ -1126,10 +1127,12 @@ function Segment({
         </div>
       )}
       {utterance.sourceText ? (
-        <p className={cn("leading-relaxed", sourceClass)}>{utterance.sourceText}</p>
+        <p className={cn("leading-relaxed", textWrapClass, sourceClass)}>
+          {utterance.sourceText}
+        </p>
       ) : null}
       {hasTranslation ? (
-        <p className={cn("leading-relaxed", translationClass)}>
+        <p className={cn("leading-relaxed", textWrapClass, translationClass)}>
           {utterance.translatedText}
         </p>
       ) : null}
@@ -1180,6 +1183,7 @@ function LiveCard({
       : displayMode === "balanced"
       ? "text-lg md:text-xl font-semibold text-zinc-800 dark:text-zinc-100"
       : "text-base text-zinc-600 dark:text-zinc-300";
+  const textWrapClass = "whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
 
   return (
     <div
@@ -1205,7 +1209,8 @@ function LiveCard({
               >
                 <p
                   className={cn(
-                    "leading-relaxed break-words",
+                    "leading-relaxed",
+                    textWrapClass,
                     sourceClass
                   )}
                 >
@@ -1223,7 +1228,8 @@ function LiveCard({
               >
                 <p
                   className={cn(
-                    "leading-snug break-words",
+                    "leading-snug",
+                    textWrapClass,
                     translationClass
                   )}
                 >

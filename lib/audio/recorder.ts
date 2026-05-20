@@ -776,8 +776,10 @@ export class Recorder {
           endMs,
           sourceFinal: "",
           sourcePending: "",
+          consumedSourcePending: "",
           transFinal: "",
           transPending: "",
+          consumedTransPending: "",
         };
         this.currentUtterances.set(speakerId, u);
       }
@@ -819,13 +821,25 @@ export class Recorder {
       const u = this.currentUtterances.get(speakerId);
       if (!u) continue; // finalized this frame
       const fp = framePending.get(speakerId);
-      u.sourcePending = fp?.source ?? "";
+      const rawSourcePending = fp?.source ?? "";
+      const normalizedSourcePending = stripConsumedPendingPrefix(
+        rawSourcePending,
+        u.consumedSourcePending
+      );
+      if (!normalizedSourcePending.matched) u.consumedSourcePending = "";
+      u.sourcePending = normalizedSourcePending.text;
       // In "cloud" mode Soniox emits a fresh translation snapshot every frame
       // and we mirror it. In "local" mode, Soniox never sends translations —
       // `scheduleLiveTranslate` is the sole writer of `transPending`, so
       // don't clobber the translation it just wrote.
       if (!isLocalMode) {
-        u.transPending = fp?.trans ?? "";
+        const rawTransPending = fp?.trans ?? "";
+        const normalizedTransPending = stripConsumedPendingPrefix(
+          rawTransPending,
+          u.consumedTransPending
+        );
+        if (!normalizedTransPending.matched) u.consumedTransPending = "";
+        u.transPending = normalizedTransPending.text;
       }
       // Before emitting the in-flight state, see if any complete sentences
       // accumulated in finals — if so, spin them off as their own cards so
@@ -853,7 +867,9 @@ export class Recorder {
    * happened.
    */
   private splitOffCompletedSentences(u: UtteranceBuilder): boolean {
-    const srcSentences = splitSentences(u.sourceFinal);
+    const sourceFinalLength = u.sourceFinal.length;
+    const sourceText = u.sourceFinal + u.sourcePending;
+    const srcSentences = splitSentenceSpans(sourceText);
     if (srcSentences.length < 2) return false;
     const transSentences = splitSentences(u.transFinal);
     // Only split when translation has caught up — otherwise we risk
@@ -862,20 +878,37 @@ export class Recorder {
       return false;
     }
     const tailIndex = srcSentences.length - 1;
+    const tailStart = srcSentences[tailIndex].start;
+    const splitSource = sourceText.slice(0, tailStart).trim();
+    if (!splitSource) return false;
+
     const splitOff: UtteranceBuilder = {
       id: u.id,
       speakerId: u.speakerId,
       startMs: u.startMs,
       endMs: u.endMs,
-      sourceFinal: srcSentences.slice(0, tailIndex).join(" "),
+      sourceFinal: splitSource,
       sourcePending: "",
+      consumedSourcePending: "",
       transFinal: transSentences.slice(0, tailIndex).join(" "),
       transPending: "",
+      consumedTransPending: "",
     };
     // The remaining "tail" sentence becomes the new in-flight utterance.
     u.id = `u-${++this.utteranceCounter}`;
-    u.sourceFinal = srcSentences[tailIndex];
-    u.sourcePending = "";
+    if (tailStart >= sourceFinalLength) {
+      const consumedFromPending = sourceText
+        .slice(sourceFinalLength, tailStart)
+        .trimStart();
+      if (consumedFromPending) {
+        u.consumedSourcePending += consumedFromPending;
+      }
+      u.sourceFinal = "";
+      u.sourcePending = sourceText.slice(tailStart).trimStart();
+    } else {
+      u.sourceFinal = sourceText.slice(tailStart, sourceFinalLength);
+      u.sourcePending = sourceText.slice(sourceFinalLength);
+    }
     u.transFinal = transSentences[tailIndex] ?? "";
     u.transPending = "";
     u.startMs = u.endMs;
@@ -1563,4 +1596,43 @@ function splitSentences(text: string): string[] {
     return t ? [t] : [];
   }
   return matches.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+function splitSentenceSpans(text: string): Array<{ text: string; start: number; end: number }> {
+  if (!text) return [];
+  const spans: Array<{ text: string; start: number; end: number }> = [];
+  const re = /[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g;
+  for (const match of text.matchAll(re)) {
+    const raw = match[0];
+    const start = match.index ?? 0;
+    const leading = raw.length - raw.trimStart().length;
+    const trailing = raw.length - raw.trimEnd().length;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    spans.push({
+      text: trimmed,
+      start: start + leading,
+      end: start + raw.length - trailing,
+    });
+  }
+  return spans;
+}
+
+function stripConsumedPendingPrefix(
+  pending: string,
+  consumed: string
+): { text: string; matched: boolean } {
+  if (!consumed) return { text: pending, matched: true };
+  if (pending.startsWith(consumed)) {
+    return { text: pending.slice(consumed.length), matched: true };
+  }
+  const trimmedConsumed = consumed.trimStart();
+  const trimmedPending = pending.trimStart();
+  if (trimmedConsumed && trimmedPending.startsWith(trimmedConsumed)) {
+    return {
+      text: trimmedPending.slice(trimmedConsumed.length),
+      matched: true,
+    };
+  }
+  return { text: pending, matched: false };
 }
