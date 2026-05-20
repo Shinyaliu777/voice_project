@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Folder as FolderIcon, Inbox } from "lucide-react";
 import { FolderCardMenu } from "@/components/FolderCardMenu";
+import { CreateFolderCard } from "@/components/CreateFolderCard";
 import { AppHeader } from "@/components/AppHeader";
 import { SessionHistoryGrouped } from "@/components/SessionHistoryGrouped";
 import { prisma } from "@/lib/db";
@@ -70,6 +71,8 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
               </div>
             </div>
           </Link>
+
+          <CreateFolderCard />
 
           {folders.map((folder) => (
             <div
