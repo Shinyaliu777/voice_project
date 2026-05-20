@@ -44,7 +44,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   });
 
   return (
-    <div className="flex min-h-screen bg-zinc-50">
+    <div className="flex min-h-screen bg-zinc-50 dark:bg-zinc-950">
       {/* Desktop: persistent sidebar column. Below lg the column is hidden
           and MobileSidebar (rendered in the header) handles navigation. */}
       <SidebarNav
@@ -53,11 +53,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         className="hidden lg:flex"
       />
       <main className="flex flex-1 min-w-0 flex-col">
-        <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-zinc-200 bg-white/80 px-3 backdrop-blur sm:gap-3 sm:px-4">
+        <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-zinc-200 bg-white/80 px-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80 sm:gap-3 sm:px-4">
           <MobileSidebar userName={userName} userInitial={userInitial} />
           <Link
             href="/dashboard"
-            className="text-[15px] font-bold tracking-tight text-zinc-900 hover:opacity-80 sm:text-[16px]"
+            className="text-[15px] font-bold tracking-tight text-zinc-900 hover:opacity-80 dark:text-zinc-50 sm:text-[16px]"
           >
             Voice Project
           </Link>

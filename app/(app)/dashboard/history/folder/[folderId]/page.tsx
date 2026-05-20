@@ -123,13 +123,13 @@ export default async function FolderPage({
       </div>
 
       {sessions.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center text-sm text-zinc-500">
+        <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
           {isUnfiled
             ? "暂无未归档的录音"
             : "这个文件夹里还没有录音"}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white">
+        <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
           <ul className="divide-y divide-zinc-100">
             {sessions.map((s) => {
               const status = statusLabel(s.status);

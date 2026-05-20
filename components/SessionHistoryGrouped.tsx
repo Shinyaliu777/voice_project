@@ -156,7 +156,7 @@ export function SessionHistoryGrouped({
   // ----- Empty states -----
   if (sessions.length === 0) {
     return (
-      <div className="rounded-[10px] border border-dashed border-zinc-200 bg-white p-10 text-center text-sm text-zinc-500">
+      <div className="rounded-[10px] border border-dashed border-zinc-200 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
         <div className="mb-2 flex justify-center text-zinc-400">
           <Sparkles className="h-5 w-5" />
         </div>
@@ -218,7 +218,7 @@ export function SessionHistoryGrouped({
 
       {/* Grouped cards */}
       {filtered.length === 0 ? (
-        <div className="rounded-[10px] border border-dashed border-zinc-200 bg-white p-10 text-center text-sm text-zinc-500">
+        <div className="rounded-[10px] border border-dashed border-zinc-200 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
           {trimmedQuery || langFilter !== "all" || statusFilter !== "all"
             ? "没有匹配的录音 — 试着调整一下筛选条件"
             : "暂无录音"}
@@ -284,8 +284,8 @@ function Chip({
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition",
         active
-          ? "border-zinc-900 bg-zinc-900 text-zinc-50"
-          : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50"
+          ? "border-zinc-900 bg-zinc-900 text-zinc-50 dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+          : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:bg-zinc-800"
       )}
     >
       {children}

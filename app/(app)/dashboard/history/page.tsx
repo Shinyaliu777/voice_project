@@ -59,14 +59,14 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           <Link
             href="/dashboard/history/folder/unfiled"
-            className="group flex items-start gap-3 rounded-[10px] border border-zinc-100 bg-white p-4 transition hover:border-zinc-200 hover:bg-zinc-50"
+            className="group flex items-start gap-3 rounded-[10px] border border-zinc-100 bg-white p-4 transition hover:border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-500">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
               <Inbox className="h-5 w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate font-medium text-zinc-900">未归档</div>
-              <div className="mt-0.5 text-xs text-zinc-500">
+              <div className="truncate font-medium text-zinc-900 dark:text-zinc-100">未归档</div>
+              <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                 {unfiledCount} 个录音
               </div>
             </div>
@@ -77,7 +77,7 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
           {folders.map((folder) => (
             <div
               key={folder.id}
-              className="group relative rounded-[10px] border border-zinc-100 bg-white transition hover:border-zinc-200 hover:bg-zinc-50"
+              className="group relative rounded-[10px] border border-zinc-100 bg-white transition hover:border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700 dark:hover:bg-zinc-800"
             >
               <Link
                 href={`/dashboard/history/folder/${folder.id}`}
@@ -95,10 +95,10 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
                   <FolderIcon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1 pr-8">
-                  <div className="truncate font-medium text-zinc-900">
+                  <div className="truncate font-medium text-zinc-900 dark:text-zinc-100">
                     {folder.name}
                   </div>
-                  <div className="mt-0.5 text-xs text-zinc-500">
+                  <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                     {folder._count.sessions} 个录音 ·{" "}
                     {folder._count.documents} 份文档
                   </div>

@@ -210,13 +210,13 @@ export function SessionCard({ session }: SessionCardProps) {
 
   return (
     <>
-      <div className="group relative rounded-[10px] border border-zinc-100 bg-white transition hover:border-zinc-200 hover:bg-zinc-50">
+      <div className="group relative rounded-[10px] border border-zinc-100 bg-white transition hover:border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700 dark:hover:bg-zinc-800">
         <Link
           href={`/dashboard/history/${session.id}`}
           className="block px-4 py-3 pr-12"
         >
           <div className="flex items-center gap-2">
-            <span className="truncate font-medium text-zinc-900">
+            <span className="truncate font-medium text-zinc-900 dark:text-zinc-100">
               {session.title || "未命名录音"}
             </span>
             <span
@@ -235,9 +235,9 @@ export function SessionCard({ session }: SessionCardProps) {
             </span>
           </div>
 
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
             <span
-              className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600"
+              className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
               aria-label={`${session.sourceLang} 到 ${session.targetLang}`}
             >
               <span aria-hidden>{flagFor(session.sourceLang)}</span>
