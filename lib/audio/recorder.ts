@@ -132,6 +132,30 @@ export class Recorder {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly WS_RECONNECT_BACKOFFS_MS = [500, 1500, 3000];
 
+  // ---- cloud translation lag bridge ----
+  // Soniox's two_way translation tokens for a sentence routinely arrive
+  // AFTER the source <end> token closes that sentence — sometimes by
+  // multiple frames. The naive flow deleted the utterance on source
+  // <end>, then the lagging translation tokens found no matching
+  // currentUtterances entry and got attributed to the NEXT sentence,
+  // producing visible misalignment: every card showed the previous
+  // sentence's translation. Reproduces obviously in Speaker-2 sequences
+  // like "你在这边等着 / 谁 / 哒哒哒" where the user saw
+  // "You wait over here" beside "谁?" and "Who?" beside "哒哒哒".
+  //
+  // Fix: when the source <end> fires in cloud mode but transFinal is
+  // still empty, park the utterance in awaitingTrans (per-speaker
+  // FIFO queue) instead of finalizing. Subsequent translation tokens
+  // for that speaker fill the queue head. Real finalize happens when
+  // (a) translation stream emits its own <end>, or (b) grace timeout
+  // elapses — capped at AWAIT_TRANS_GRACE_MS so a missing translation
+  // can't stall the segment POST indefinitely.
+  private awaitingTrans: Map<
+    number | undefined,
+    Array<{ u: UtteranceBuilder; awaitingSince: number }>
+  > = new Map();
+  private readonly AWAIT_TRANS_GRACE_MS = 3000;
+
   // ---- page visibility ----
   // When the tab is hidden the browser throttles setInterval to ≤1 Hz, and
   // some platforms suspend the AudioContext entirely, so PCM stops flowing
@@ -248,6 +272,16 @@ export class Recorder {
     const recorderStopped = this.stopMediaRecorderAndDrain();
 
     // 2. Tell Soniox we're done sending audio (best-effort, ignore errors).
+    // Drain any utterances still waiting for lagging translation —
+    // without this, sentences that finalized in cloud mode within the
+    // last few seconds of recording would never get POSTed.
+    for (const queue of this.awaitingTrans.values()) {
+      for (const item of queue) {
+        this.emitUtterance(item.u, true);
+        this.finalizeQueue.push(item.u);
+      }
+    }
+    this.awaitingTrans.clear();
     this.flushFinalizeQueueImmediate();
     try {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -834,6 +868,16 @@ export class Recorder {
         }
       }
       this.currentUtterances.clear();
+      // Same for utterances waiting on lagging translation: take what
+      // we have and finalize. Their transFinal may still be empty,
+      // which is fine — better than discarding the source line.
+      for (const queue of this.awaitingTrans.values()) {
+        for (const item of queue) {
+          this.emitUtterance(item.u, true);
+          this.finalizeQueue.push(item.u);
+        }
+      }
+      this.awaitingTrans.clear();
       this.flushFinalizeQueueImmediate();
       return;
     }
@@ -848,6 +892,12 @@ export class Recorder {
     >();
     const finalizedThisFrame: UtteranceBuilder[] = [];
     const touched = new Set<number | undefined>();
+    // Awaiting-trans bookkeeping for this frame: speakers whose queue head
+    // received translation tokens (we emit a single update at frame end
+    // rather than per-token), and whether any awaited utterance finalized
+    // (so we know to schedule the segment POST flush).
+    const awaitingTouched = new Set<number | undefined>();
+    let awaitingFinalizedThisFrame = false;
 
     for (const tok of frame.tokens) {
       if (typeof tok.text !== "string") continue;
@@ -860,6 +910,44 @@ export class Recorder {
         status !== "" && status !== "original" && status !== "none";
 
       let u = this.currentUtterances.get(speakerId);
+
+      // A translation token with no in-flight utterance for this speaker
+      // is almost always a lagging translation for an utterance whose
+      // source <end> already parked it in awaitingTrans. Backfill the
+      // queue head instead of opening a new utterance (which would
+      // misattribute the translation to the next sentence).
+      if (!u && isTranslation) {
+        const queue = this.awaitingTrans.get(speakerId);
+        if (queue && queue.length > 0) {
+          const head = queue[0];
+          if (tok.text === "<end>") {
+            if (isFinal) {
+              // Translation stream finished for this awaited utterance —
+              // real finalize now. Promote any unmerged transPending.
+              if (head.u.transPending && !head.u.transFinal) {
+                head.u.transFinal = head.u.transPending;
+                head.u.transPending = "";
+              }
+              this.emitUtterance(head.u, true);
+              this.finalizeQueue.push(head.u);
+              queue.shift();
+              if (queue.length === 0) this.awaitingTrans.delete(speakerId);
+              awaitingFinalizedThisFrame = true;
+            }
+            continue;
+          }
+          if (isFinal) {
+            head.u.transFinal += tok.text;
+            head.u.endMs = Math.max(head.u.endMs, endMs);
+            awaitingTouched.add(speakerId);
+          }
+          // Ignore non-final translation tokens while awaiting — we don't
+          // need a streaming preview here; the card already shows the
+          // source and the final translation will overwrite when it lands.
+          continue;
+        }
+      }
+
       if (!u) {
         u = {
           id: `u-${++this.utteranceCounter}`,
@@ -888,9 +976,31 @@ export class Recorder {
             u.transFinal = u.transPending;
             u.transPending = "";
           }
-          finalizedThisFrame.push(u);
-          this.currentUtterances.delete(speakerId);
-          this.liveTranslate.delete(speakerId);
+          // Cloud mode: if Soniox hasn't delivered any translation for
+          // this utterance yet, defer finalize and park in awaitingTrans
+          // so the NEXT frame's translation tokens land on this utterance
+          // (the queue head) rather than the next sentence's utterance.
+          // See the awaitingTrans field comment for why.
+          const shouldAwaitTrans =
+            this.config.translationMode === "cloud" &&
+            this.config.sourceLanguage !== this.config.targetLanguage &&
+            u.sourceFinal.trim().length > 0 &&
+            u.transFinal.trim().length === 0;
+          if (shouldAwaitTrans) {
+            const queue = this.awaitingTrans.get(speakerId) ?? [];
+            queue.push({ u, awaitingSince: performance.now() });
+            this.awaitingTrans.set(speakerId, queue);
+            this.currentUtterances.delete(speakerId);
+            this.liveTranslate.delete(speakerId);
+            // Emit once now (with whatever transFinal we have, likely
+            // empty) so the UI promotes the source card immediately;
+            // we re-emit when the translation lands.
+            this.emitUtterance(u, true);
+          } else {
+            finalizedThisFrame.push(u);
+            this.currentUtterances.delete(speakerId);
+            this.liveTranslate.delete(speakerId);
+          }
         }
         continue;
       }
@@ -947,7 +1057,45 @@ export class Recorder {
       this.emitUtterance(u, true);
       this.finalizeQueue.push(u);
     }
-    if (finalizedThisFrame.length > 0 || didSplit) this.scheduleFinalizeFlush();
+
+    // Re-emit awaiting heads whose translation grew this frame so the UI
+    // updates from "source only" to "source + translation". Single emit
+    // per speaker even if multiple translation tokens landed.
+    for (const speakerId of awaitingTouched) {
+      const queue = this.awaitingTrans.get(speakerId);
+      if (queue && queue.length > 0) {
+        this.emitUtterance(queue[0].u, true);
+      }
+    }
+
+    // Grace-timeout sweep: force-finalize any awaiting head that has been
+    // parked longer than AWAIT_TRANS_GRACE_MS. Without this, a permanently
+    // dropped translation token (network hiccup, Soniox glitch) would
+    // leave the utterance stranded in awaitingTrans forever and the
+    // segment would never get POSTed.
+    let awaitingTimedOut = false;
+    const now = performance.now();
+    for (const [spk, queue] of this.awaitingTrans) {
+      while (
+        queue.length > 0 &&
+        now - queue[0].awaitingSince > this.AWAIT_TRANS_GRACE_MS
+      ) {
+        const head = queue.shift()!;
+        this.emitUtterance(head.u, true);
+        this.finalizeQueue.push(head.u);
+        awaitingTimedOut = true;
+      }
+      if (queue.length === 0) this.awaitingTrans.delete(spk);
+    }
+
+    if (
+      finalizedThisFrame.length > 0 ||
+      didSplit ||
+      awaitingFinalizedThisFrame ||
+      awaitingTimedOut
+    ) {
+      this.scheduleFinalizeFlush();
+    }
   }
 
   /**
