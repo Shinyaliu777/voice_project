@@ -1,27 +1,33 @@
 "use client";
 
 import * as React from "react";
-import { Copy, Gift, Link as LinkIcon, Loader2, Plus, Sparkles } from "lucide-react";
+import { Copy, Gift, Link as LinkIcon, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatInviteCodeForDisplay } from "@/lib/invite";
 import { cn } from "@/lib/utils";
 
 interface InviteRow {
   id: string;
   code: string;
   note: string | null;
-  status: "pending" | "claimed" | "expired";
+  isActive: boolean;
+  claimCount: number;
   createdAt: string;
   expiresAt: string | null;
-  claimedAt: string | null;
-  claimedBy: { email: string; name: string | null } | null;
+}
+
+interface RecentInvitee {
+  email: string;
+  name: string | null;
+  createdAt: string;
 }
 
 interface ListResponse {
-  invitationsRemaining: number;
   invitations: InviteRow[];
+  recentInvitees: RecentInvitee[];
 }
 
 export function InvitesManager() {
@@ -49,10 +55,6 @@ export function InvitesManager() {
   }, [fetchList]);
 
   const handleCreate = async () => {
-    if (!data || data.invitationsRemaining <= 0) {
-      toast.error("邀请额度已用完");
-      return;
-    }
     setCreating(true);
     try {
       const resp = await fetch("/api/invite/create", {
@@ -78,7 +80,7 @@ export function InvitesManager() {
 
   const copyCode = async (code: string) => {
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(formatInviteCodeForDisplay(code));
       toast.success("已复制邀请码");
     } catch {
       toast.error("复制失败，请手动选中");
@@ -106,53 +108,51 @@ export function InvitesManager() {
   }
   if (!data) return null;
 
-  const hasQuota = data.invitationsRemaining > 0;
+  const totalClaims = data.invitations.reduce((acc, i) => acc + i.claimCount, 0);
+  const activeInvitations = data.invitations.filter((i) => i.isActive);
 
   return (
     <div className="flex flex-col gap-5">
       <section className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-amber-500" />
-          <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-            剩余邀请额度
-          </span>
-          <span className="ml-auto text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-            {data.invitationsRemaining}
+        <div className="flex items-center gap-3">
+          <Gift className="h-5 w-5 text-amber-500" />
+          <div className="flex-1">
+            <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+              生成邀请码
+            </div>
+            <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              一个邀请码可以被多人使用。生成后分享链接或邀请码均可。
+            </div>
+          </div>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            活跃 {activeInvitations.length} · 累计邀请{" "}
+            <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+              {totalClaims}
+            </span>
           </span>
         </div>
-        {hasQuota ? (
-          <>
-            <div className="mt-4 flex gap-2">
-              <Input
-                placeholder="备注（可选，例如 「给同事」）"
-                value={note}
-                maxLength={80}
-                onChange={(e) => setNote(e.target.value)}
-                disabled={creating}
-              />
-              <Button onClick={handleCreate} disabled={creating}>
-                {creating ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                生成新邀请码
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-              生成后请尽快分享 — 30 天未使用会自动过期。
-            </p>
-          </>
-        ) : (
-          <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-            额度已用完。如需更多名额，请联系管理员。
-          </p>
-        )}
+        <div className="mt-4 flex gap-2">
+          <Input
+            placeholder="备注（可选，例如「给同事」「公众号头条」）"
+            value={note}
+            maxLength={80}
+            onChange={(e) => setNote(e.target.value)}
+            disabled={creating}
+          />
+          <Button onClick={handleCreate} disabled={creating}>
+            {creating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+            生成新邀请码
+          </Button>
+        </div>
       </section>
 
       <section>
         <h2 className="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          我生成的邀请码（{data.invitations.length}）
+          我的邀请码（{data.invitations.length}）
         </h2>
         {data.invitations.length === 0 ? (
           <div className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-400">
@@ -172,6 +172,29 @@ export function InvitesManager() {
           </ul>
         )}
       </section>
+
+      {data.recentInvitees.length > 0 ? (
+        <section>
+          <h2 className="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            最近邀请的用户（{data.recentInvitees.length}）
+          </h2>
+          <ul className="flex flex-col gap-1.5">
+            {data.recentInvitees.map((u) => (
+              <li
+                key={u.email}
+                className="flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <span className="text-zinc-900 dark:text-zinc-100">
+                  {u.name ?? u.email.split("@")[0]}
+                </span>
+                <span className="text-zinc-500 dark:text-zinc-400">
+                  {new Date(u.createdAt).toLocaleDateString("zh-CN")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -185,33 +208,42 @@ function InviteRowItem({
   onCopyCode: (code: string) => void;
   onCopyLink: (code: string) => void;
 }) {
-  const statusLabel: Record<InviteRow["status"], string> = {
-    pending: "未使用",
-    claimed: "已使用",
+  const expired =
+    inv.expiresAt !== null && new Date(inv.expiresAt).getTime() < Date.now();
+  const status: "active" | "expired" | "disabled" = !inv.isActive
+    ? "disabled"
+    : expired
+      ? "expired"
+      : "active";
+  const statusLabel = {
+    active: "可用",
+    disabled: "已停用",
     expired: "已过期",
-  };
-  const statusColor: Record<InviteRow["status"], string> = {
-    pending:
+  }[status];
+  const statusColor = {
+    active:
       "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300",
-    claimed:
+    disabled:
       "border-zinc-200 bg-zinc-100 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-300",
     expired:
       "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300",
-  };
-  const showActions = inv.status === "pending";
+  }[status];
+
+  const showActions = status === "active";
+
   return (
     <li className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center gap-3">
         <code className="flex-1 truncate rounded-md bg-zinc-100 px-3 py-1.5 font-mono text-sm font-medium tracking-wider text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
-          {inv.code}
+          {formatInviteCodeForDisplay(inv.code)}
         </code>
         <span
           className={cn(
             "rounded-full border px-2 py-0.5 text-[11px] font-medium",
-            statusColor[inv.status]
+            statusColor
           )}
         >
-          {statusLabel[inv.status]}
+          {statusLabel}
         </span>
         {showActions ? (
           <>
@@ -236,12 +268,15 @@ function InviteRowItem({
       </div>
       <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
         {inv.note ? <span>📝 {inv.note}</span> : null}
-        <span>生成于 {new Date(inv.createdAt).toLocaleString("zh-CN")}</span>
-        {inv.status === "claimed" && inv.claimedBy ? (
-          <span>
-            被 {inv.claimedBy.name ?? inv.claimedBy.email} 使用
-          </span>
-        ) : inv.expiresAt && inv.status === "pending" ? (
+        <span>
+          已邀请{" "}
+          <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+            {inv.claimCount}
+          </span>{" "}
+          人
+        </span>
+        <span>生成于 {new Date(inv.createdAt).toLocaleDateString("zh-CN")}</span>
+        {inv.expiresAt && status === "active" ? (
           <span>
             过期于 {new Date(inv.expiresAt).toLocaleDateString("zh-CN")}
           </span>

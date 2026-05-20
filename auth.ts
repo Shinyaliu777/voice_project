@@ -5,11 +5,7 @@ import Credentials from "next-auth/providers/credentials";
 import { cookies } from "next/headers";
 
 import { prisma } from "@/lib/db";
-import {
-  INVITE_REQUIRED,
-  PENDING_INVITE_COOKIE,
-  initialInviteQuota,
-} from "@/lib/invite";
+import { PENDING_INVITE_COOKIE } from "@/lib/invite";
 
 /**
  * NextAuth (Auth.js v5) configuration.
@@ -101,69 +97,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       : []),
   ],
   callbacks: {
-    /**
-     * Invite-only beta gate.
-     *
-     * Existing users (email already in DB) always sign in. New accounts
-     * require a valid `pending_invite` cookie (set by
-     * /api/invite/validate). To prevent two browsers using the same code
-     * from both succeeding (the original implementation re-read status
-     * and then proceeded, leaving a race window), we atomically reserve
-     * the code here:
-     *
-     *   UPDATE Invitation
-     *      SET status = 'reserved', claimedAt = now()
-     *    WHERE code = ? AND status = 'pending' AND (expiresAt is null OR expiresAt > now())
-     *
-     * Only one updateMany wins. The createUser hook below then upgrades
-     * the row to 'claimed' once the user.id is available. If createUser
-     * never runs (e.g. sign-in aborts mid-flow), reserved rows are
-     * treated as available again by /validate after a grace window.
-     *
-     * Case sensitivity: Postgres `String @unique` is case-sensitive,
-     * but NextAuth providers return the email in whatever case the
-     * upstream IdP uses. We compare via `findFirst` with `mode:
-     * "insensitive"` so Foo@Gmail.com and foo@gmail.com map to the
-     * same row.
-     */
-    async signIn({ user }) {
-      if (!INVITE_REQUIRED) return true;
-      const email = user.email?.toLowerCase().trim();
-      if (!email) return false;
-      const existing = await prisma.user.findFirst({
-        where: { email: { equals: email, mode: "insensitive" } },
-        select: { id: true },
-      });
-      if (existing) return true; // existing accounts bypass the gate
-
-      const cookieStore = await cookies();
-      const pending = cookieStore.get(PENDING_INVITE_COOKIE)?.value;
-      if (!pending) return false;
-
-      // Atomic reserve — pending→reserved. Only one concurrent sign-in
-      // can flip the row, so simultaneous sign-ups with the same code
-      // resolve to one winner. Also recovers `reserved` rows older
-      // than RESERVE_GRACE_MS — they're presumed abandoned by a
-      // browser that crashed mid-OAuth.
-      const RESERVE_GRACE_MS = 10 * 60 * 1000;
-      const staleReservedCutoff = new Date(Date.now() - RESERVE_GRACE_MS);
-      const reserved = await prisma.invitation.updateMany({
-        where: {
-          code: pending,
-          OR: [
-            { status: "pending" },
-            { status: "reserved", claimedAt: { lt: staleReservedCutoff } },
-          ],
-          AND: [
-            {
-              OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-            },
-          ],
-        },
-        data: { status: "reserved", claimedAt: new Date() },
-      });
-      return reserved.count === 1;
-    },
     async jwt({ token, user }) {
       // `user` is only present on initial sign-in. Persist the DB id
       // onto the JWT so subsequent requests can read it from `auth()`.
@@ -200,32 +133,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           });
         }
       } catch (err) {
-        // Don't block signup on subscription seeding.
         console.warn("[auth] failed to seed default subscription", err);
       }
 
-      // Seed initial invite quota from env (default 0 for closed beta).
-      if (user.id) {
-        const quota = initialInviteQuota();
-        if (quota > 0) {
-          await prisma.user
-            .update({
-              where: { id: user.id },
-              data: { invitationsRemaining: quota },
-            })
-            .catch((err) =>
-              console.warn("[auth] failed to seed invite quota", err)
-            );
-        }
-      }
-
-      // Finalize the invite claim that signIn() reserved. By the time
-      // we're here, the row is already status='reserved' with
-      // claimedAt set — we just need to upgrade to 'claimed' and
-      // attach claimedByUserId/invitedById. If signIn somehow let us
-      // through without a reserve (shouldn't happen when
-      // INVITE_REQUIRED is on, but possible when it's off and the
-      // user pasted a code anyway), we skip silently.
+      // Optional referral attribution. If the signup carried a code
+      // via the pending_invite cookie (set by /api/invite/validate),
+      // bump the code's claimCount and stamp invitedById on the new
+      // user. Codes are reusable so we don't change their status —
+      // a single code can attribute any number of new users.
       try {
         const cookieStore = await cookies();
         const code = cookieStore.get(PENDING_INVITE_COOKIE)?.value;
@@ -233,29 +148,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           await prisma.$transaction(async (tx) => {
             const inv = await tx.invitation.findUnique({
               where: { code },
-              select: { status: true, createdByUserId: true },
+              select: {
+                id: true,
+                isActive: true,
+                expiresAt: true,
+                createdByUserId: true,
+              },
             });
             if (!inv) return;
-            // INVITE_REQUIRED path: row is 'reserved' from signIn.
-            // INVITE_REQUIRED-off path: row is still 'pending'. Accept
-            // both so a wide-open instance with codes can still
-            // attribute invitations correctly.
-            if (inv.status !== "reserved" && inv.status !== "pending") {
-              return;
-            }
-            const claim = await tx.invitation.updateMany({
-              where: {
-                code,
-                status: { in: ["reserved", "pending"] },
-                claimedByUserId: null,
-              },
-              data: {
-                status: "claimed",
-                claimedByUserId: user.id,
-                claimedAt: new Date(),
-              },
+            if (!inv.isActive) return;
+            if (inv.expiresAt && inv.expiresAt.getTime() < Date.now()) return;
+            await tx.invitation.update({
+              where: { id: inv.id },
+              data: { claimCount: { increment: 1 } },
             });
-            if (claim.count === 1 && user.id) {
+            if (user.id) {
               await tx.user.update({
                 where: { id: user.id },
                 data: { invitedById: inv.createdByUserId },
@@ -265,7 +172,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           cookieStore.delete(PENDING_INVITE_COOKIE);
         }
       } catch (err) {
-        console.warn("[auth] failed to claim invite", err);
+        // Attribution failures must never block signup.
+        console.warn("[auth] failed to record referral attribution", err);
       }
     },
   },

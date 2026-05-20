@@ -25,14 +25,14 @@ model User {
   /// ships, derive from Subscription.plan in the route handler.
   maxConcurrentRecordings Int       @default(1)
 
-  // ---- Invite-only closed beta ---------------------------------------
-  // `invitationsRemaining` is the user's remaining invite quota — they
-  // can call POST /api/invite/create up to this many times. Seeded by
-  // INVITE_INITIAL_QUOTA env (default 0; admin bumps for trusted users
-  // manually). `invitedById` records who brought this user in (null
-  // for the genesis users invited via direct DB insert).
-  invitationsRemaining Int     @default(0)
-  invitedById          String?
+  // ---- Referral attribution (NOT a gate) -----------------------------
+  // Registration is always open. When a new user signs up via a link
+  // carrying `?invite=CODE` (or types the code into the optional
+  // field on /login), we stamp `invitedById` here — purely for
+  // attribution / future reward mechanics. There is no quota: any
+  // user can generate referral codes, and any code can be reused by
+  // any number of signups.
+  invitedById String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -50,7 +50,6 @@ model User {
   invitedBy      User?        @relation("UserInvites", fields: [invitedById], references: [id])
   invitedUsers   User[]       @relation("UserInvites")
   createdInvites Invitation[] @relation("CreatedInvites")
-  claimedInvite  Invitation?  @relation("ClaimedInvite")
 
   // ---- NextAuth -----------------------------------------------------
   // We use JWT session strategy so there's no separate Session table
@@ -488,36 +487,35 @@ model RecordingSlot {
   @@index([userId, status])
 }
 
-/// Invite-only closed beta gating.
+/// Referral codes — reusable, opt-in attribution.
 ///
-/// Existing users spend from `User.invitationsRemaining` to mint an
-/// Invitation row + opaque `code`. Sharing the code lets the recipient
-/// sign up; on first sign-in the signIn callback consumes the code,
-/// marks it `claimed`, and stamps `User.invitedById` on the new user.
+/// Any logged-in user can mint a code. Anyone signing up can apply a
+/// code (optional; signup never requires one). When a new user
+/// signs up with a code we stamp `User.invitedById` and bump
+/// `claimCount` here. Same code can be reused by any number of new
+/// signups.
 ///
-/// `code` is a short opaque string (8-12 chars, alphanumeric, no
-/// ambiguous glyphs). It's the bearer credential — anyone with the
-/// code can use it. Status transitions: pending → claimed | expired.
-/// `expired` is set by a maintenance job (TBD) for `pending` rows past
-/// `expiresAt`; the validate route also treats now > expiresAt as
-/// expired even if the column hasn't been updated yet.
+/// `code` is a short opaque string (alphanumeric, no ambiguous
+/// glyphs). `isActive=false` retires a code without deleting it
+/// (preserves the attribution chain for users already brought in by
+/// it). `expiresAt` lets the inviter time-box a campaign code.
 model Invitation {
   id              String    @id @default(cuid())
   code            String    @unique
   createdByUserId String
   /// Optional human-readable label so the inviter can remember
-  /// "this code is for Alice" without remembering the code itself.
+  /// "this code is for the marketing email" or "for Alice".
   note            String?
-  status          String    @default("pending")
+  /// Soft-disable. When false the code is rejected at /validate even
+  /// if it's not expired. Past attributions are kept.
+  isActive        Boolean   @default(true)
   expiresAt       DateTime?
-  claimedAt       DateTime?
-  /// One claim per code; uniqueness enforced via the relation's @unique.
-  claimedByUserId String?   @unique
+  /// How many signups have used this code so far. Maintained by the
+  /// createUser hook (auth.ts); not directly writable from the API.
+  claimCount      Int       @default(0)
   createdAt       DateTime  @default(now())
 
-  createdBy User  @relation("CreatedInvites", fields: [createdByUserId], references: [id], onDelete: Cascade)
-  claimedBy User? @relation("ClaimedInvite", fields: [claimedByUserId], references: [id])
+  createdBy User @relation("CreatedInvites", fields: [createdByUserId], references: [id], onDelete: Cascade)
 
   @@index([createdByUserId])
-  @@index([status])
 }

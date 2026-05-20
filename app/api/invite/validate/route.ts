@@ -5,38 +5,34 @@ import { prisma } from "@/lib/db";
 import {
   PENDING_INVITE_COOKIE,
   PENDING_INVITE_TTL_SECONDS,
+  parseInviteCodeInput,
 } from "@/lib/invite";
 import { clientIpFromHeaders, rateLimitHit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Pre-sign-in invite check. Called from the /login page when the
- * user types an invite code. If the code is pending + non-expired:
- *   - return { ok: true, inviter: { email, name } }
- *   - set a short-lived `pending_invite` cookie carrying the code
+ * Optional referral-code check.
  *
- * The cookie survives the OAuth round-trip so the signIn callback in
- * auth.ts can consume it when the new user is created.
+ * Called from the /login page if the user pastes a code. If valid:
+ *   - returns { ok: true, inviter: { email, name } } so the UI can
+ *     display "你接受了 X 的邀请"
+ *   - sets a short-lived cookie carrying the code through the OAuth
+ *     round-trip; on first sign-in events.createUser bumps the code's
+ *     claimCount and stamps invitedById
  *
- * No auth required — this endpoint runs before sign-in.
+ * Signup never requires a code. This endpoint exists only to provide
+ * feedback ("this code works") and carry attribution forward.
  *
- * # Anti-enumeration
- *
- * Returns the SAME error shape for "code doesn't exist", "code
- * already claimed", and "code expired" — only the message body
- * differs. Status is uniformly 404 for any "this code won't work"
- * reason. This prevents attackers from binary-searching valid codes
- * by status code (the previous version returned 404/410 distinctly,
- * exposing whether a candidate string was ever a real code).
- *
- * Also rate-limited (10 hits per IP per minute). With the 10-char
- * alphabet-32 code space (32^10 ≈ 1e15) the rate limit alone makes
- * brute force infeasible even before the anti-enumeration step.
+ * Rate-limited (15 hits per IP per minute) and refuses very short
+ * inputs to prevent casual enumeration of the code space. We don't
+ * return distinct status codes for "doesn't exist" vs "disabled" vs
+ * "expired" — all three collapse to 404 with the same message — so
+ * an attacker can't binary-search whether a candidate string was
+ * ever a real code.
  */
-const RATE_LIMIT_PER_MIN = 10;
-const MIN_CODE_LEN = 8; // generator outputs 10; refuse below 8 to
-// shrink the search space we're willing to consult at all.
+const RATE_LIMIT_PER_MIN = 15;
+const MIN_CODE_LEN = 8; // generator outputs 10 — refuse 6-char fishing.
 
 export async function POST(req: NextRequest) {
   const ip = clientIpFromHeaders(req.headers);
@@ -57,7 +53,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
-  const code = String(body.code ?? "").trim().toUpperCase();
+  const code = parseInviteCodeInput(String(body.code ?? ""));
   if (!code || code.length < MIN_CODE_LEN || code.length > 16) {
     return NextResponse.json(
       { ok: false, error: "邀请码格式不正确" },
@@ -72,30 +68,17 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // Anti-enumeration: collapse "doesn't exist" / "claimed" / "expired"
-  // into the same 404 — attackers shouldn't be able to learn which
-  // codes have ever existed by probing.
-  //
-  // "reserved" rows: signIn passed but createUser never ran (browser
-  // closed mid-OAuth). Treat as available again after a 10-minute
-  // grace so a one-off failure doesn't burn the code; before that
-  // it's effectively held by someone in mid-signup.
-  const RESERVE_GRACE_MS = 10 * 60 * 1000;
-  const reservedStillHeld =
-    invitation?.status === "reserved" &&
-    invitation.claimedAt !== null &&
-    Date.now() - invitation.claimedAt.getTime() < RESERVE_GRACE_MS;
+  const expired =
+    invitation?.expiresAt !== null &&
+    invitation?.expiresAt !== undefined &&
+    invitation.expiresAt.getTime() < Date.now();
 
-  const unusable =
-    !invitation ||
-    invitation.status === "claimed" ||
-    invitation.status === "expired" ||
-    reservedStillHeld ||
-    (invitation?.expiresAt !== null &&
-      invitation!.expiresAt.getTime() < Date.now());
-  if (unusable) {
+  if (!invitation || !invitation.isActive || expired) {
     return NextResponse.json(
-      { ok: false, error: "邀请码无效或已被使用" },
+      {
+        ok: false,
+        error: "邀请码无效或已失效，请确认后重试或联系发码人",
+      },
       { status: 404 }
     );
   }
@@ -114,8 +97,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     inviter: {
-      email: invitation!.createdBy.email,
-      name: invitation!.createdBy.name,
+      email: invitation.createdBy.email,
+      name: invitation.createdBy.name,
     },
   });
 }

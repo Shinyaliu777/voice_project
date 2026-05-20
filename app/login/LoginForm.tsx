@@ -7,81 +7,96 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
+/**
+ * Login form. The optional invite-code section is purely for
+ * attribution — signup never requires a code. The two flows:
+ *
+ *   - Normal signup: just click Google / type dev-login email
+ *   - With referral: paste/type code → we auto-call /validate which
+ *     sets a cookie → then proceed with the usual provider button.
+ *     The cookie carries the code through OAuth so events.createUser
+ *     stamps invitedById.
+ *
+ * When the URL has `?invite=CODE`, we auto-validate on mount so the
+ * user doesn't have to click anything. They can still proceed without
+ * waiting — sign-in works either way; validation just adds
+ * attribution if it lands first.
+ */
 export default function LoginForm({
   callbackUrl,
   hasGoogle,
   allowDevLogin,
-  inviteRequired,
   inviteCodeFromQuery,
 }: {
   callbackUrl: string;
   hasGoogle: boolean;
   allowDevLogin: boolean;
-  /** When true, the user must enter + validate an invite code before
-   *  sign-in is allowed (validate sets a short-lived cookie the
-   *  signIn callback reads). Existing accounts can still log in
-   *  without one — the gate only fires for new account creation. */
-  inviteRequired: boolean;
   /** Pre-fill from /login?invite=XXX (clicked from a copied invite
-   *  link). User still needs to tap "验证" so we don't auto-burn the
-   *  cookie before they confirm the email they want to sign in with. */
+   *  link). Auto-validates on mount so a single click on the invite
+   *  link is enough — no extra "verify" button to press. */
   inviteCodeFromQuery: string | null;
 }) {
   const [email, setEmail] = React.useState("");
   const [inviteCode, setInviteCode] = React.useState(
-    inviteCodeFromQuery?.trim().toUpperCase() ?? ""
+    inviteCodeFromQuery?.trim() ?? ""
   );
   const [inviteOk, setInviteOk] = React.useState(false);
   const [inviteValidating, setInviteValidating] = React.useState(false);
   const [inviterLabel, setInviterLabel] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
-  /** Closed-beta gate: a new account can't be created without a valid
-   *  pending_invite cookie. Existing accounts can always log in — but
-   *  we don't know from the client whether the entered email is new or
-   *  existing, so the safest UX is "validate code first, then sign in"
-   *  whenever INVITE_REQUIRED is set. */
-  const needsInvite = inviteRequired && !inviteOk;
-
-  const validateInvite = async () => {
-    const trimmed = inviteCode.trim().toUpperCase();
-    if (!trimmed) {
-      toast.error("请输入邀请码");
-      return;
-    }
-    setInviteValidating(true);
-    try {
-      const resp = await fetch("/api/invite/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: trimmed }),
-      });
-      const data = (await resp.json().catch(() => null)) as
-        | {
-            ok?: boolean;
-            error?: string;
-            inviter?: { email: string; name: string | null };
+  const validateInvite = React.useCallback(
+    async (raw: string, silentSuccess = false) => {
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      setInviteValidating(true);
+      try {
+        const resp = await fetch("/api/invite/validate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: trimmed }),
+        });
+        const data = (await resp.json().catch(() => null)) as
+          | {
+              ok?: boolean;
+              error?: string;
+              inviter?: { email: string; name: string | null };
+            }
+          | null;
+        if (!resp.ok || !data?.ok) {
+          // Silent failure on auto-validate (URL-driven) — the user
+          // didn't ask for this, no reason to nag.
+          if (!silentSuccess) {
+            toast.error(data?.error ?? "邀请码无效");
           }
-        | null;
-      if (!resp.ok || !data?.ok) {
-        toast.error(data?.error ?? "邀请码无效");
-        return;
+          setInviteOk(false);
+          setInviterLabel(null);
+          return;
+        }
+        setInviteOk(true);
+        setInviterLabel(data.inviter?.name ?? data.inviter?.email ?? null);
+        if (!silentSuccess) {
+          toast.success("邀请码已识别");
+        }
+      } catch (err) {
+        if (!silentSuccess) {
+          toast.error(err instanceof Error ? err.message : "网络异常");
+        }
+      } finally {
+        setInviteValidating(false);
       }
-      setInviteOk(true);
-      setInviterLabel(data.inviter?.name ?? data.inviter?.email ?? null);
-      toast.success("邀请码有效");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "网络异常");
-    } finally {
-      setInviteValidating(false);
+    },
+    []
+  );
+
+  // Auto-validate when the URL carried a code.
+  React.useEffect(() => {
+    if (inviteCodeFromQuery && inviteCodeFromQuery.trim()) {
+      void validateInvite(inviteCodeFromQuery, true);
     }
-  };
+  }, [inviteCodeFromQuery, validateInvite]);
 
   const handleGoogle = async () => {
-    if (needsInvite) {
-      toast.error("请先验证邀请码");
-      return;
-    }
     setBusy(true);
     try {
       await signIn("google", { callbackUrl });
@@ -94,10 +109,6 @@ export default function LoginForm({
   const handleDev = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim()) return;
-    if (needsInvite) {
-      toast.error("请先验证邀请码");
-      return;
-    }
     setBusy(true);
     try {
       const res = await signIn("dev-login", {
@@ -106,7 +117,6 @@ export default function LoginForm({
         redirect: false,
       });
       if (res?.error) throw new Error(res.error);
-      // Manual navigation since redirect: false.
       window.location.href = res?.url ?? callbackUrl;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "登录失败");
@@ -116,52 +126,64 @@ export default function LoginForm({
 
   return (
     <div className="mt-6 flex flex-col gap-3">
-      {inviteRequired ? (
-        <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
-            邀请码 {inviteOk ? "✓" : "（新用户必填）"}
-          </label>
+      {/* Optional referral code section. Always visible (signup is
+          always open); displays an "accepted" badge once we've
+          validated. */}
+      <details
+        className="rounded-lg border border-zinc-200 bg-zinc-50/60 dark:border-zinc-800 dark:bg-zinc-900/40"
+        open={inviteCode.length > 0 || inviteOk}
+      >
+        <summary className="cursor-pointer select-none px-3 py-2 text-xs text-zinc-600 dark:text-zinc-300">
+          {inviteOk
+            ? `✓ 已应用邀请码${inviterLabel ? ` · 来自 ${inviterLabel}` : ""}`
+            : "有邀请码？（可选）"}
+        </summary>
+        <div className="px-3 pb-3 pt-1">
           <div className="flex gap-2">
             <Input
               type="text"
-              placeholder="例如 K3X9P7L2"
+              placeholder="K3X9-P7L2-MR"
               value={inviteCode}
               onChange={(e) => {
                 setInviteCode(e.target.value);
                 setInviteOk(false);
                 setInviterLabel(null);
               }}
-              disabled={busy || inviteOk}
+              onBlur={(e) => {
+                // Auto-validate when the user finishes typing — saves
+                // the click on a separate "verify" button.
+                if (e.target.value.trim() && !inviteOk) {
+                  void validateInvite(e.target.value);
+                }
+              }}
+              disabled={busy || inviteValidating}
               className="font-mono uppercase tracking-wider"
-              maxLength={16}
+              maxLength={20}
             />
-            <Button
-              type="button"
-              variant={inviteOk ? "default" : "outline"}
-              onClick={validateInvite}
-              disabled={busy || inviteValidating || inviteOk || !inviteCode.trim()}
-            >
-              {inviteValidating ? "校验中…" : inviteOk ? "已验证" : "验证"}
-            </Button>
+            {!inviteOk ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void validateInvite(inviteCode)}
+                disabled={busy || inviteValidating || !inviteCode.trim()}
+              >
+                {inviteValidating ? "校验中" : "应用"}
+              </Button>
+            ) : null}
           </div>
-          {inviteOk && inviterLabel ? (
-            <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
-              来自 {inviterLabel} 的邀请
-            </p>
-          ) : (
-            <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-              已有账号可直接登录，无需邀请码。
-            </p>
-          )}
+          <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+            没有邀请码也可以正常注册。填写后用作邀请人归属。
+          </p>
         </div>
-      ) : null}
+      </details>
 
       {hasGoogle ? (
         <Button
           type="button"
           className="w-full"
           onClick={handleGoogle}
-          disabled={busy || needsInvite}
+          disabled={busy}
         >
           使用 Google 登录
         </Button>
@@ -184,11 +206,7 @@ export default function LoginForm({
             required
             disabled={busy}
           />
-          <Button
-            type="submit"
-            variant="outline"
-            disabled={busy || !email.trim() || needsInvite}
-          >
+          <Button type="submit" variant="outline" disabled={busy || !email.trim()}>
             以此邮箱登录（开发用）
           </Button>
           <p className="text-[11px] leading-relaxed text-zinc-400">
