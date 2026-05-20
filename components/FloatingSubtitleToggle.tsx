@@ -69,6 +69,14 @@ export function FloatingSubtitleToggle({
   const [windowWidth, setWindowWidth] = React.useState(480);
   const [windowHeight, setWindowHeight] = React.useState(200);
   const [fontScale, setFontScale] = React.useState(1);
+  // Capability check: Document PiP is Chromium-only and only on desktop.
+  // iOS Safari, mobile Chrome, and Firefox don't ship it. Hiding the
+  // button on those devices is friendlier than letting users click it
+  // and surfacing a toast error.
+  const [pipSupported, setPipSupported] = React.useState(false);
+  React.useEffect(() => {
+    setPipSupported(getDocumentPiP() !== null);
+  }, []);
 
   React.useEffect(() => {
     let alive = true;
@@ -177,6 +185,10 @@ export function FloatingSubtitleToggle({
   }, [closePip, openPip]);
 
   const open = pipDoc !== null && container !== null;
+
+  // Hide the entire control on devices that can't open a PiP window —
+  // mobile browsers, Safari, Firefox. Saves a confusing toast click.
+  if (!pipSupported) return null;
 
   return (
     <>
