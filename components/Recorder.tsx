@@ -43,6 +43,7 @@ import { LanguagePicker } from "@/components/LanguagePicker";
 import { AudioSourcePicker } from "@/components/AudioSourcePicker";
 import { TranslationModePicker } from "@/components/TranslationModePicker";
 import { LocalTranslatorDialog } from "@/components/LocalTranslatorDialog";
+import { ResumeRecordingBanner } from "@/components/ResumeRecordingBanner";
 import { BookmarkInRecording } from "@/components/BookmarkInRecording";
 import { FloatingSubtitleToggle } from "@/components/FloatingSubtitleToggle";
 import { LiveShareDialog } from "@/components/LiveShareDialog";
@@ -324,30 +325,40 @@ export function Recorder({
     }
   }, []);
 
-  const startRecording = React.useCallback(async () => {
+  const startRecording = React.useCallback(async (resumeSessionId?: string) => {
     if (starting || state.status === "recording") return;
     setStarting(true);
     setConfirmedSections([]);
     setPendingSection(null);
     setMinutesStatus("idle");
     try {
-      // Title is intentionally blank by default. The schema default is
-      // "" and SessionCard renders that as the formatted createdAt.
-      // The previous "use new Date().toLocaleString() if not provided"
-      // approach poisoned hydration: layout used to feed Recorder
-      // defaultTitle from the most-recent unfinished session, so a
-      // fresh session would inherit the previous one's frozen timestamp
-      // string, and 14 sessions ended up sharing one fictional title.
-      // If a caller explicitly passes defaultTitle (e.g. resuming a
-      // session), honor it; otherwise leave it empty.
-      const title = (defaultTitle ?? "").trim();
-      const sessionResp = await fetch("/api/transcription/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, sourceLang, targetLang }),
-      });
-      if (!sessionResp.ok) throw new Error(`Failed to create session (${sessionResp.status})`);
-      const session = (await sessionResp.json()) as SessionDTO;
+      let session: SessionDTO;
+      if (resumeSessionId) {
+        // Resume an existing in-progress session — reuse its id so new
+        // chunks and segments append to the prior content. Server-side
+        // chunkIndex / segmentIndex auto-increment on the next POST so
+        // the client doesn't need to know the previous max.
+        const resp = await fetch(
+          `/api/transcription/sessions/${encodeURIComponent(resumeSessionId)}`
+        );
+        if (!resp.ok)
+          throw new Error(`Failed to load session (${resp.status})`);
+        session = (await resp.json()) as SessionDTO;
+      } else {
+        // Title is intentionally blank by default. The schema default
+        // is "" and SessionCard renders that as the formatted createdAt.
+        // Honour a caller-passed defaultTitle when present (resume
+        // flows used to depend on it before resumeSessionId existed).
+        const title = (defaultTitle ?? "").trim();
+        const sessionResp = await fetch("/api/transcription/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, sourceLang, targetLang }),
+        });
+        if (!sessionResp.ok)
+          throw new Error(`Failed to create session (${sessionResp.status})`);
+        session = (await sessionResp.json()) as SessionDTO;
+      }
       setSessionId(session.id);
       onSessionCreated?.(session);
 
@@ -797,6 +808,18 @@ export function Recorder({
   if (state.status === "idle") {
     return (
       <div className="flex w-full flex-col">
+        {/* Resume-recording banner — surfaces any in-progress session
+            from the previous load (closed tab / browser crash /
+            finalize never ran). Self-fetches /api/transcription/
+            sessions/in-progress and hides itself if nothing to recover.
+            onResume reuses the sessionId so new audio/segments append
+            to the prior content. */}
+        <ResumeRecordingBanner
+          onResume={(session) => {
+            void startRecording(session.id);
+          }}
+        />
+
         {/* Top controls — audio source / language pair / translation mode */}
         <div className="flex flex-wrap items-center justify-end gap-2">
           <AudioSourcePicker value={audioSource} onChange={setAudioSource} />
@@ -828,7 +851,7 @@ export function Recorder({
         <div className="mt-16 flex flex-col items-center gap-5 sm:mt-24 sm:gap-6">
           <button
             type="button"
-            onClick={startRecording}
+            onClick={() => void startRecording()}
             disabled={starting}
             aria-label="开始录制"
             className="bg-mic-gradient ring-mic-halo relative flex h-24 w-24 items-center justify-center rounded-full text-white transition-transform hover:scale-[1.03] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70 sm:h-28 sm:w-28 lg:h-32 lg:w-32"
