@@ -1,14 +1,15 @@
 import { redirect } from "next/navigation";
 import LoginForm from "./LoginForm";
 import { auth } from "@/auth";
+import { INVITE_REQUIRED } from "@/lib/invite";
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ callbackUrl?: string }>;
+  searchParams: Promise<{ callbackUrl?: string; invite?: string }>;
 }) {
   const session = await auth();
-  const { callbackUrl } = await searchParams;
+  const { callbackUrl, invite } = await searchParams;
   if (session?.user) {
     redirect(callbackUrl ?? "/dashboard");
   }
@@ -25,12 +26,16 @@ export default async function LoginPage({
           Voice Project
         </h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          登录后开始录制 · 你的录音只你能看见
+          {INVITE_REQUIRED
+            ? "内测期 · 新用户需要邀请码"
+            : "登录后开始录制 · 你的录音只你能看见"}
         </p>
         <LoginForm
           callbackUrl={callbackUrl ?? "/dashboard"}
           hasGoogle={hasGoogle}
           allowDevLogin={allowDevLogin}
+          inviteRequired={INVITE_REQUIRED}
+          inviteCodeFromQuery={invite ?? null}
         />
       </div>
     </main>

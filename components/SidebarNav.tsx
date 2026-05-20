@@ -17,6 +17,7 @@ import {
   Moon,
   Sun,
   LogOut,
+  Gift,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -67,6 +68,7 @@ const NAV_ENTRIES: NavEntry[] = [
   },
   { href: "/dashboard/shared-with-me", label: "共享", icon: Share2, kind: "link" },
   { href: "/dashboard/polls", label: "投票", icon: Vote, kind: "link" },
+  { href: "/dashboard/invites", label: "邀请", icon: Gift, kind: "link" },
   { href: "/dashboard/billing", label: "套餐", icon: Sparkles, kind: "link" },
   { label: "设置", icon: Settings, kind: "button", action: "settings" },
 ];

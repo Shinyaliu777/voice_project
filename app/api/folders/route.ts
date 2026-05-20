@@ -55,41 +55,44 @@ export async function POST(req: NextRequest) {
   }
   const { name, color, sourceLang, targetLang } = parsed.data;
 
-  // Surface a clean 409 when the user already has a folder of the same
-  // name. There's no DB-level @@unique on (userId, name) yet — adding
-  // one would require a migration that could fail on existing dup data
-  // — so we do an explicit lookup. CreateFolderCard expects this 409
-  // shape; without it, creating a duplicate silently succeeded and the
-  // toast said "已创建" while showing two folders side-by-side.
-  const existingDup = await prisma.folder.findFirst({
-    where: { userId, name },
-    select: { id: true },
-  });
-  if (existingDup) {
+  // @@unique([userId, name]) on Folder makes duplicate names a Postgres
+  // constraint violation — Prisma surfaces it as P2002. Catch and turn
+  // into a clean 409 so CreateFolderCard's existing 409 handler fires.
+  // (Previous code did a fetch-then-check on the application side,
+  // which had a TOCTOU window where two simultaneous POSTs could both
+  // pass the lookup and create twin rows.)
+  try {
+    const folder = await prisma.folder.create({
+      data: {
+        userId,
+        name,
+        color: color ?? null,
+        sourceLang: sourceLang ?? null,
+        targetLang: targetLang ?? null,
+      },
+      include: {
+        _count: { select: { sessions: true, documents: true } },
+      },
+    });
+
     return NextResponse.json(
-      { error: "Folder with this name already exists" },
-      { status: 409 }
+      toFolderDTO(folder, {
+        sessionCount: folder._count.sessions,
+        documentCount: folder._count.documents,
+      }),
+      { status: 201 }
     );
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      "code" in err &&
+      (err as { code?: string }).code === "P2002"
+    ) {
+      return NextResponse.json(
+        { error: "Folder with this name already exists" },
+        { status: 409 }
+      );
+    }
+    throw err;
   }
-
-  const folder = await prisma.folder.create({
-    data: {
-      userId,
-      name,
-      color: color ?? null,
-      sourceLang: sourceLang ?? null,
-      targetLang: targetLang ?? null,
-    },
-    include: {
-      _count: { select: { sessions: true, documents: true } },
-    },
-  });
-
-  return NextResponse.json(
-    toFolderDTO(folder, {
-      sessionCount: folder._count.sessions,
-      documentCount: folder._count.documents,
-    }),
-    { status: 201 }
-  );
 }

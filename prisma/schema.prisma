@@ -8,24 +8,34 @@ datasource db {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  emailVerified DateTime?
-  name          String?
+  id                      String    @id @default(cuid())
+  email                   String    @unique
+  emailVerified           DateTime?
+  name                    String?
   /// NextAuth uses `image` for the OAuth profile picture; we keep our
   /// existing `avatarUrl` alias as well for backwards-compat with code that
   /// reads it. New code should prefer `image`.
-  image         String?
-  avatarUrl     String?
+  image                   String?
+  avatarUrl               String?
   /// Free-form per-user UI/notification/floating-window preferences (JSON blob)
-  settings      Json?
+  settings                Json?
   /// Maximum concurrent recording slots ("active" RecordingSlot rows)
   /// this user may hold. Free plan = 1, future paid plans bump this via
   /// /api/recording/start logic. Stored on the user for now; once Stripe
   /// ships, derive from Subscription.plan in the route handler.
-  maxConcurrentRecordings Int @default(1)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  maxConcurrentRecordings Int       @default(1)
+
+  // ---- Invite-only closed beta ---------------------------------------
+  // `invitationsRemaining` is the user's remaining invite quota — they
+  // can call POST /api/invite/create up to this many times. Seeded by
+  // INVITE_INITIAL_QUOTA env (default 0; admin bumps for trusted users
+  // manually). `invitedById` records who brought this user in (null
+  // for the genesis users invited via direct DB insert).
+  invitationsRemaining Int     @default(0)
+  invitedById          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   folders           Folder[]
   sessions          Session[]
@@ -36,14 +46,20 @@ model User {
   pollVotes         PollVote[]
   recordingSlots    RecordingSlot[]
 
+  // Invite relations (named so we can use User on both sides)
+  invitedBy      User?        @relation("UserInvites", fields: [invitedById], references: [id])
+  invitedUsers   User[]       @relation("UserInvites")
+  createdInvites Invitation[] @relation("CreatedInvites")
+  claimedInvite  Invitation?  @relation("ClaimedInvite")
+
   // ---- NextAuth -----------------------------------------------------
   // We use JWT session strategy so there's no separate Session table
   // (which would clash with our existing Session = recording-session
   // model below). Only Account + VerificationToken are needed.
-  accounts      Account[]
+  accounts Account[]
 
   // ---- Billing ------------------------------------------------------
-  subscription  Subscription?
+  subscription Subscription?
 }
 
 // =========================================================
@@ -53,8 +69,8 @@ model User {
 model Account {
   id                String  @id @default(cuid())
   userId            String
-  type              String                   // "oauth" | "email" | "credentials"
-  provider          String                   // "google" | "apple" | …
+  type              String // "oauth" | "email" | "credentials"
+  provider          String // "google" | "apple" | …
   providerAccountId String
   refresh_token     String? @db.Text
   access_token      String? @db.Text
@@ -71,8 +87,8 @@ model Account {
 }
 
 model VerificationToken {
-  identifier String                          // email being verified
-  token      String                          // opaque magic-link token
+  identifier String // email being verified
+  token      String // opaque magic-link token
   expires    DateTime
 
   @@unique([identifier, token])
@@ -126,24 +142,24 @@ model Plan {
 }
 
 model Subscription {
-  id                       String             @id @default(cuid())
-  userId                   String             @unique
-  user                     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  planId                   String
-  plan                     Plan               @relation(fields: [planId], references: [id])
-  status                   SubscriptionStatus @default(ACTIVE)
-  billingCycle             BillingCycle       @default(MONTHLY)
-  currentPeriodStart       DateTime           @default(now())
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId               String
+  plan                 Plan               @relation(fields: [planId], references: [id])
+  status               SubscriptionStatus @default(ACTIVE)
+  billingCycle         BillingCycle       @default(MONTHLY)
+  currentPeriodStart   DateTime           @default(now())
   /// null for default/free plans that don't expire.
-  currentPeriodEnd         DateTime?
-  cancelAtPeriodEnd        Boolean            @default(false)
-  isStripeSubscription     Boolean            @default(false)
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  isStripeSubscription Boolean            @default(false)
   /// "default" (auto on signup) | "stripe" | "apple_iap" | "redemption" | "admin"
-  subscriptionSource       String             @default("default")
-  stripeSubscriptionId     String?            @unique
-  stripeCustomerId         String?
-  createdAt                DateTime           @default(now())
-  updatedAt                DateTime           @updatedAt
+  subscriptionSource   String             @default("default")
+  stripeSubscriptionId String?            @unique
+  stripeCustomerId     String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   @@index([planId])
 }
@@ -164,6 +180,10 @@ model Folder {
   sessions  Session[]
   documents Document[]
 
+  // Duplicate folder names per user were already rejected in the POST
+  // handler but only via a fetch-then-check race-condition pattern.
+  // This makes uniqueness an invariant, eliminating the TOCTOU.
+  @@unique([userId, name])
   @@index([userId])
 }
 
@@ -261,17 +281,17 @@ model Bookmark {
 }
 
 model Minutes {
-  id           String   @id @default(cuid())
-  sessionId    String   @unique
+  id        String @id @default(cuid())
+  sessionId String @unique
 
   // ---- Final (post-recording) minutes ----
   // Written by the explicit "生成纪要" button after recording stops.
   // Runs a full pass over the entire transcript so it can produce a
   // higher-quality, more structured summary than the live version.
-  contentMd    String   @default("") @db.Text
+  contentMd    String  @default("") @db.Text
   sectionsJson Json?
   model        String?
-  status       String   @default("pending") // pending/streaming/done/error
+  status       String  @default("pending") // pending/streaming/done/error
 
   // ---- Live (incremental) minutes ----
   // Written during recording by the auto-refresh that fires every
@@ -279,13 +299,13 @@ model Minutes {
   // it happens. Independent of the final fields above so the "纪要"
   // tab (final) and "实时纪要" tab (live) can show genuinely
   // different content.
-  liveContentMd    String   @default("") @db.Text
+  liveContentMd    String  @default("") @db.Text
   liveSectionsJson Json?
   liveModel        String?
-  liveStatus       String   @default("pending") // pending/streaming/done/error
+  liveStatus       String  @default("pending") // pending/streaming/done/error
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 }
@@ -339,7 +359,7 @@ model ChatSession {
 model ChatMessage {
   id            String   @id @default(cuid())
   chatSessionId String
-  role          String   // user/assistant/system
+  role          String // user/assistant/system
   content       String   @db.Text
   partsJson     Json?
   createdAt     DateTime @default(now())
@@ -466,4 +486,38 @@ model RecordingSlot {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, status])
+}
+
+/// Invite-only closed beta gating.
+///
+/// Existing users spend from `User.invitationsRemaining` to mint an
+/// Invitation row + opaque `code`. Sharing the code lets the recipient
+/// sign up; on first sign-in the signIn callback consumes the code,
+/// marks it `claimed`, and stamps `User.invitedById` on the new user.
+///
+/// `code` is a short opaque string (8-12 chars, alphanumeric, no
+/// ambiguous glyphs). It's the bearer credential — anyone with the
+/// code can use it. Status transitions: pending → claimed | expired.
+/// `expired` is set by a maintenance job (TBD) for `pending` rows past
+/// `expiresAt`; the validate route also treats now > expiresAt as
+/// expired even if the column hasn't been updated yet.
+model Invitation {
+  id              String    @id @default(cuid())
+  code            String    @unique
+  createdByUserId String
+  /// Optional human-readable label so the inviter can remember
+  /// "this code is for Alice" without remembering the code itself.
+  note            String?
+  status          String    @default("pending")
+  expiresAt       DateTime?
+  claimedAt       DateTime?
+  /// One claim per code; uniqueness enforced via the relation's @unique.
+  claimedByUserId String?   @unique
+  createdAt       DateTime  @default(now())
+
+  createdBy User  @relation("CreatedInvites", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  claimedBy User? @relation("ClaimedInvite", fields: [claimedByUserId], references: [id])
+
+  @@index([createdByUserId])
+  @@index([status])
 }
