@@ -1,62 +1,19 @@
-import { Recorder } from "@/components/Recorder";
-import { prisma } from "@/lib/db";
-import { getDevUserId } from "@/lib/dev-user";
-import type { SessionDTO } from "@/lib/contracts";
+// The /dashboard landing UI is now rendered by <RecorderLane /> mounted
+// inside (app)/layout.tsx, not here. RecorderLane stays mounted across
+// every dashboard sub-route so audio capture / WebSocket / live-translate
+// keep running when the user navigates to chat / history / vocabulary /
+// etc. — recording is only stopped by an explicit user click on
+// "结束录制".
+//
+// This page deliberately returns null: RecorderLane already fills the
+// main viewport when pathname === "/dashboard". Returning anything here
+// would render *on top of* the recorder UI and visually duplicate it.
+//
+// Any unfinished-session hydration (default source/target lang for the
+// Recorder's initial state) happens inside layout.tsx; see RecorderLane.
 
-function toSessionDTO(s: {
-  id: string;
-  title: string;
-  folderId: string | null;
-  sourceLang: string;
-  targetLang: string;
-  status: string;
-  durationMs: number | null;
-  audioPath: string | null;
-  audioContentType: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  _count?: { segments: number };
-}): SessionDTO {
-  return {
-    id: s.id,
-    title: s.title,
-    folderId: s.folderId,
-    sourceLang: s.sourceLang,
-    targetLang: s.targetLang,
-    status: s.status as SessionDTO["status"],
-    durationMs: s.durationMs,
-    audioPath: s.audioPath,
-    audioContentType: s.audioContentType,
-    segmentCount: s._count?.segments ?? 0,
-    hasMinutes: false,
-    audioUrl: null,
-    createdAt: s.createdAt.toISOString(),
-    updatedAt: s.updatedAt.toISOString(),
-  };
-}
+export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
-  const userId = await getDevUserId();
-
-  // Recent unfinished session (status not "ready" and not "error")
-  const unfinished = await prisma.session.findFirst({
-    where: {
-      userId,
-      status: { in: ["idle", "recording", "uploading"] },
-    },
-    orderBy: { updatedAt: "desc" },
-    include: { _count: { select: { segments: true } } },
-  });
-
-  const initialSession = unfinished ? toSessionDTO(unfinished) : undefined;
-
-  return (
-    <div className="mx-auto flex h-[calc(100vh-3rem)] max-w-3xl flex-col px-3 py-4 sm:max-w-4xl sm:px-4 sm:py-6 md:max-w-5xl md:px-6 lg:px-8">
-      <Recorder
-        defaultSourceLang={initialSession?.sourceLang ?? "en"}
-        defaultTargetLang={initialSession?.targetLang ?? "zh"}
-        defaultTitle={initialSession?.title}
-      />
-    </div>
-  );
+export default function DashboardPage() {
+  return null;
 }
