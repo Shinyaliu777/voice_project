@@ -221,11 +221,14 @@ export class TranscriptionApp {
     const microphone =
       hasNavigator &&
       typeof navigator.mediaDevices?.getUserMedia === "function";
+    // Use `in` operator rather than property access — Chromium's
+    // AudioContext.prototype.audioWorklet is a getter that calls the
+    // C++ binding requiring a real AudioContext instance; reading it
+    // off the prototype throws "Illegal invocation".
     const audioWorklet =
       hasWindow &&
       typeof window.AudioContext !== "undefined" &&
-      typeof (window.AudioContext.prototype as AudioContext).audioWorklet !==
-        "undefined";
+      "audioWorklet" in window.AudioContext.prototype;
     const webSocket = hasWindow && typeof window.WebSocket !== "undefined";
     const documentPictureInPicture =
       hasWindow &&
