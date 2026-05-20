@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
+import { displaySessionTitle } from "@/components/SessionCard";
 
 interface SearchPageProps {
   searchParams: Promise<{ q?: string }>;
@@ -66,7 +67,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       },
       orderBy: { createdAt: "desc" },
       take: 30,
-      include: { session: { select: { id: true, title: true } } },
+      include: { session: { select: { id: true, title: true, createdAt: true } } },
     }),
   ]);
 
@@ -129,7 +130,10 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                     >
                       <div className="flex items-center gap-2 text-xs text-zinc-500">
                         <span className="font-medium text-zinc-700 dark:text-zinc-300">
-                          {seg.session.title || "未命名录音"}
+                          {displaySessionTitle(
+                            seg.session.title,
+                            seg.session.createdAt
+                          )}
                         </span>
                         <span>·</span>
                         <span className="font-mono">{formatTime(seg.audioStartMs)}</span>

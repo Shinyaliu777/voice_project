@@ -331,7 +331,16 @@ export function Recorder({
     setPendingSection(null);
     setMinutesStatus("idle");
     try {
-      const title = defaultTitle ?? new Date().toLocaleString();
+      // Title is intentionally blank by default. The schema default is
+      // "" and SessionCard renders that as the formatted createdAt.
+      // The previous "use new Date().toLocaleString() if not provided"
+      // approach poisoned hydration: layout used to feed Recorder
+      // defaultTitle from the most-recent unfinished session, so a
+      // fresh session would inherit the previous one's frozen timestamp
+      // string, and 14 sessions ended up sharing one fictional title.
+      // If a caller explicitly passes defaultTitle (e.g. resuming a
+      // session), honor it; otherwise leave it empty.
+      const title = (defaultTitle ?? "").trim();
       const sessionResp = await fetch("/api/transcription/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -72,6 +72,35 @@ export function flagFor(code: string): string {
 }
 
 /** `{m}分{s}秒` if >= 60s else `{s}秒`; `—` when null. */
+/**
+ * Title to actually show in lists. Empty + the legacy
+ * `new Date().toLocaleString()` default that polluted older sessions
+ * both fall back to a YYYY-MM-DD HH:mm derived from createdAt — the
+ * real creation time — instead of the misleading string. Detection
+ * regex matches zh-CN locale "YYYY/M/D[ ,]HH:MM:SS" with optional
+ * leading zeros so the prior "2026/5/18 08:46:48" form collapses
+ * naturally.
+ */
+export function displaySessionTitle(
+  rawTitle: string | null | undefined,
+  createdAt: string | Date
+): string {
+  const t = (rawTitle ?? "").trim();
+  const looksLikeAutoTimestamp =
+    /^\d{4}\/\d{1,2}\/\d{1,2}[\s,]+\d{1,2}:\d{2}(?::\d{2})?$/.test(t);
+  if (!t || looksLikeAutoTimestamp) {
+    const d = createdAt instanceof Date ? createdAt : new Date(createdAt);
+    if (!Number.isFinite(d.getTime())) return "未命名录音";
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+  }
+  return t;
+}
+
 export function formatDuration(ms: number | null): string {
   if (ms == null) return "—";
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -217,7 +246,7 @@ export function SessionCard({ session }: SessionCardProps) {
         >
           <div className="flex items-center gap-2">
             <span className="truncate font-medium text-zinc-900 dark:text-zinc-100">
-              {session.title || "未命名录音"}
+              {displaySessionTitle(session.title, session.createdAt)}
             </span>
             <span
               className={cn(
@@ -351,7 +380,7 @@ export function SessionCard({ session }: SessionCardProps) {
           <DialogHeader>
             <DialogTitle>删除录音</DialogTitle>
             <DialogDescription>
-              确定删除「{session.title || "未命名录音"}
+              确定删除「{displaySessionTitle(session.title, session.createdAt)}
               」？这段录音的转录、纪要和书签也会一并删除，操作无法撤销。
             </DialogDescription>
           </DialogHeader>

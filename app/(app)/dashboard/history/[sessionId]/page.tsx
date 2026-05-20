@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Bookmark as BookmarkIcon, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AudioPlayer } from "@/components/AudioPlayer";
+import { displaySessionTitle } from "@/components/SessionCard";
 import { TranscriptView } from "@/components/TranscriptView";
 import { MinutesView } from "@/components/MinutesView";
 import { GenerateMinutesButton } from "@/components/GenerateMinutesButton";
@@ -156,8 +157,8 @@ export default async function SessionDetailPage({
 
       <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
-            {session.title || "未命名录音"}
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            {displaySessionTitle(session.title, session.createdAt)}
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
             <span className="inline-flex items-center gap-1.5">
@@ -183,7 +184,7 @@ export default async function SessionDetailPage({
           <SessionActionsBar
             sessionId={session.id}
             audioUrl={audioUrl}
-            title={session.title || "未命名录音"}
+            title={displaySessionTitle(session.title, session.createdAt)}
           />
           <Button variant="outline" size="sm" asChild>
             <Link href={`/dashboard/chat/new?sessionId=${session.id}`}>
