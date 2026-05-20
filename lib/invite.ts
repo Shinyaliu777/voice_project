@@ -1,21 +1,22 @@
 /**
- * Referral-code primitives.
+ * Server-only referral-code primitives.
  *
  * Registration is always open. A signup may carry an optional referral
  * code (via URL `?invite=` or the field on /login) that we use only to
  * attribute the new user back to whoever shared the code — never as a
  * gate. The same code can be reused indefinitely.
  *
- *   - `generateInviteCode()` — opaque 10-char alphanumeric from a
- *     no-ambiguous-glyph alphabet (no 0/O/1/I/l).
- *   - `parseInviteCodeInput()` — accept whatever the user pasted
- *     (with spaces / dashes / lowercase) and normalize.
- *   - `PENDING_INVITE_COOKIE` — short-lived HTTP-only cookie that
- *     carries the (validated) code through the NextAuth OAuth
- *     round-trip so events.createUser can stamp it.
+ * ⚠️ This module imports `node:crypto`. NEVER import it from a client
+ * component — webpack will fail with `UnhandledSchemeError`. Client
+ * components should import from `@/lib/invite-format` (which has the
+ * parse/format helpers without the crypto dependency); we re-export
+ * them here as a convenience for server code that wants everything
+ * in one place.
  */
 
 import { randomBytes } from "node:crypto";
+
+export { parseInviteCodeInput, formatInviteCodeForDisplay } from "./invite-format";
 
 // I/l/1, O/0 removed so users typing a code never have to puzzle over
 // "did you mean Il?".
@@ -38,20 +39,6 @@ export function generateInviteCode(length = DEFAULT_LENGTH): string {
     return generateInviteCode(length);
   }
   return out;
-}
-
-/**
- * Normalize whatever the user pasted into the canonical form.
- * Strips spaces and dashes, uppercases, trims. Lets the inviter
- * share a friendlier-looking `K3X9-P7L2-MR` without breaking lookup.
- */
-export function parseInviteCodeInput(raw: string): string {
-  return raw.replace(/[\s-]+/g, "").toUpperCase();
-}
-
-/** Display form: insert a dash every 4 chars so the code is scannable. */
-export function formatInviteCodeForDisplay(code: string): string {
-  return code.replace(/(.{4})(?=.)/g, "$1-");
 }
 
 export const PENDING_INVITE_COOKIE = "pending_invite";
