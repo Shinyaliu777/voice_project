@@ -30,6 +30,13 @@ export interface SidebarNavProps {
   userInitial?: string;
   subscription?: "Free" | "Pro" | "Team";
   className?: string;
+  /** When true, render filling its parent container (no sticky / h-screen /
+   *  fixed width / border-r) — used by MobileSidebar so the nav fits inside
+   *  a slide-in Dialog instead of as a column in the page layout. */
+  inDrawer?: boolean;
+  /** Called when a nav link is clicked. Drawer wrapper uses this to close
+   *  itself after navigation. */
+  onNavigate?: () => void;
 }
 
 interface NavEntry {
@@ -126,6 +133,8 @@ export function SidebarNav({
   userInitial,
   subscription = "Free",
   className,
+  inDrawer,
+  onNavigate,
 }: SidebarNavProps) {
   const pathname = usePathname() ?? "/";
   const initial = (userInitial ?? userName.charAt(0) ?? "U").toUpperCase();
@@ -134,10 +143,12 @@ export function SidebarNav({
   return (
     <aside
       className={cn(
-        // sticky so the sidebar stays pinned while the main column scrolls.
-        // Without this the aside is h-screen but rendered inline — once the
-        // page grows past 100vh the whole sidebar scrolls away with it.
-        "sticky top-0 flex h-screen w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/60 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/60",
+        // Desktop: sticky column on the left, fixed w-72, h-screen so it
+        // pins while the main column scrolls. Drawer mode strips all of
+        // that — fills the slide-in container instead.
+        inDrawer
+          ? "flex h-full w-full flex-col bg-zinc-50/95 dark:bg-zinc-950/95"
+          : "sticky top-0 flex h-screen w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/60 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/60",
         className
       )}
     >
@@ -197,7 +208,11 @@ export function SidebarNav({
             return (
               <li key={entry.label}>
                 {isLink && entry.href ? (
-                  <Link href={entry.href} className={itemClassName}>
+                  <Link
+                    href={entry.href}
+                    className={itemClassName}
+                    onClick={onNavigate}
+                  >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span>{entry.label}</span>
                   </Link>
@@ -205,7 +220,12 @@ export function SidebarNav({
                   <button
                     type="button"
                     className={cn(itemClassName, "w-full text-left")}
-                    onClick={onClickAction}
+                    onClick={() => {
+                      onClickAction?.();
+                      // Settings opens a modal — closing the drawer is
+                      // actually right because the modal sits above.
+                      onNavigate?.();
+                    }}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span>{entry.label}</span>
