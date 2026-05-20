@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Radio } from "lucide-react";
+import { ArrowDown, Radio } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -647,12 +647,55 @@ export function LiveShareViewer({
     });
   }, [state.order, state.byId]);
 
-  // Auto-scroll on new content.
+  // Auto-scroll on new content — but only when the viewer is already
+  // pinned to the bottom. Without the scroll-lock detection every
+  // incoming utterance / segment yanked the view back down, so the
+  // viewer couldn't read history during a live session (user reported
+  // "无论是跟随主持人还是不跟随，都没法查看历史记录"). Mirrors the
+  // host-side UtteranceList scroll-lock pattern.
+  const pinnedRef = React.useRef(true);
+  const [showJumpToBottom, setShowJumpToBottom] = React.useState(false);
+
+  // rAF-throttled scroll listener so the pinned flag tracks the user's
+  // intent without firing setState on every scroll tick.
   React.useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    let raf: number | null = null;
+    const onScroll = () => {
+      if (raf != null) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+        const nextPinned = dist < 64;
+        if (nextPinned !== pinnedRef.current) {
+          pinnedRef.current = nextPinned;
+          setShowJumpToBottom(!nextPinned);
+        }
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (raf != null) cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!pinnedRef.current) return;
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [sortedOrder, state.byId]);
+
+  const handleJumpToBottom = React.useCallback(() => {
+    pinnedRef.current = true;
+    setShowJumpToBottom(false);
+    const el = scrollerRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  }, []);
 
   // Pick the in-flight (non-final) utterance for highlight — always the last
   // non-final one in time order.
@@ -792,7 +835,7 @@ export function LiveShareViewer({
           </div>
         </header>
 
-        <main className="mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
+        <main className="relative mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
           <div
             ref={scrollerRef}
             className="flex max-h-[80vh] flex-col gap-3 overflow-y-auto"
@@ -885,6 +928,17 @@ export function LiveShareViewer({
               })
             )}
           </div>
+          {showJumpToBottom ? (
+            <button
+              type="button"
+              onClick={handleJumpToBottom}
+              className="absolute bottom-4 right-4 z-10 inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-md backdrop-blur transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-200 dark:hover:bg-zinc-800 sm:bottom-6 sm:right-6"
+              aria-label="回到最新"
+            >
+              <ArrowDown className="h-3 w-3" aria-hidden />
+              回到最新
+            </button>
+          ) : null}
         </main>
       </div>
     </div>
