@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { getDevUserId, UnauthenticatedError } from "@/lib/dev-user";
 import { ensureQuota, QuotaExceededError } from "@/lib/quota";
 import { toSessionDTO } from "@/lib/api/dto";
+import { audioFileUrl } from "@/lib/audio-url";
 import {
   SUPPORTED_LANGUAGES,
   type PaginatedResponse,
@@ -98,7 +99,7 @@ export async function GET(req: NextRequest) {
     toSessionDTO(r, {
       segmentCount: r._count.segments,
       hasMinutes: !!r.minutes,
-      audioUrl: r.audioPath ? `/api/audio/file/${r.audioPath}` : null,
+      audioUrl: audioFileUrl(r.audioPath),
     })
   );
 
@@ -187,7 +188,7 @@ export async function POST(req: NextRequest) {
     toSessionDTO(session, {
       segmentCount: session._count.segments,
       hasMinutes: !!session.minutes,
-      audioUrl: session.audioPath ? `/api/audio/file/${session.audioPath}` : null,
+      audioUrl: audioFileUrl(session.audioPath),
     }),
     { status: 201 }
   );

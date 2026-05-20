@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 import { toSessionDTO } from "@/lib/api/dto";
+import { audioFileUrl } from "@/lib/audio-url";
 
 const SESSION_STATUSES = [
   "idle",
@@ -49,7 +50,7 @@ export async function GET(
     toSessionDTO(row, {
       segmentCount: row._count.segments,
       hasMinutes: !!row.minutes,
-      audioUrl: row.audioPath ? `/api/audio/file/${row.audioPath}` : null,
+      audioUrl: audioFileUrl(row.audioPath),
     })
   );
 }
@@ -113,7 +114,7 @@ export async function PATCH(
     toSessionDTO(updated, {
       segmentCount: updated._count.segments,
       hasMinutes: !!updated.minutes,
-      audioUrl: updated.audioPath ? `/api/audio/file/${updated.audioPath}` : null,
+      audioUrl: audioFileUrl(updated.audioPath),
     })
   );
 }

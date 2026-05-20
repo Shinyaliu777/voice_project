@@ -16,7 +16,7 @@ import { RecommendCardsDialog } from "@/components/RecommendCardsDialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
-import { getStorageProvider } from "@/lib/storage";
+import { audioFileUrl } from "@/lib/audio-url";
 import type {
   BookmarkDTO,
   MinutesSection,
@@ -123,14 +123,10 @@ export default async function SessionDetailPage({
     createdAt: b.createdAt.toISOString(),
   }));
 
-  let audioUrl: string | null = null;
-  if (session.audioPath) {
-    try {
-      audioUrl = getStorageProvider().publicUrlFor(session.audioPath);
-    } catch {
-      audioUrl = null;
-    }
-  }
+  // Always route through the streaming API rather than the storage
+  // provider's direct URL — gives us Range-header support for seeking
+  // and decouples this page from the local-fs vs S3 storage choice.
+  const audioUrl: string | null = audioFileUrl(session.audioPath);
 
   // Final (post-recording) minutes — written by the explicit "生成纪要"
   // button. Higher-quality, full-pass over the entire transcript.

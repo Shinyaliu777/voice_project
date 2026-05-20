@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
+import { audioFileUrl } from "@/lib/audio-url";
 import type {
   FinalizeAudioResponse,
   StorageProvider,
@@ -202,7 +203,7 @@ export async function POST(req: NextRequest) {
     audioPath: finalKey,
     audioContentType: firstContentType,
     durationMs: resolvedDurationMs,
-    audioUrl: `/api/audio/file/${finalKey}`,
+    audioUrl: audioFileUrl(finalKey)!,
   };
   return NextResponse.json(resp);
 }

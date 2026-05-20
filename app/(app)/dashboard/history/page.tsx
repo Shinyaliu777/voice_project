@@ -7,6 +7,7 @@ import { SessionHistoryGrouped } from "@/components/SessionHistoryGrouped";
 import { prisma } from "@/lib/db";
 import { getDevUserId } from "@/lib/dev-user";
 import { toSessionDTO } from "@/lib/api/dto";
+import { audioFileUrl } from "@/lib/audio-url";
 
 interface HistoryPageProps {
   searchParams: Promise<{ q?: string }>;
@@ -44,7 +45,7 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
     toSessionDTO(row, {
       segmentCount: row._count.segments,
       hasMinutes: !!row.minutes,
-      audioUrl: row.audioPath ? `/api/audio/file/${row.audioPath}` : null,
+      audioUrl: audioFileUrl(row.audioPath),
     })
   );
 
