@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { track } from "@/lib/analytics";
 
 export interface LiveShareDialogProps {
   sessionId: string;
@@ -102,6 +103,10 @@ export function LiveShareDialog({
           error: null,
         });
         onTokenMintedRef.current?.({ token: data.token, url: data.url });
+        track("share_link_created", {
+          role: "host",
+          sessionId,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : "无法生成分享链接";
         setState({ loading: false, token: null, viewerUrl: null, error: message });

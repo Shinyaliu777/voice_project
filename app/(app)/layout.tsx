@@ -8,6 +8,7 @@ import { RecorderLane } from "@/components/RecorderLane";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toaster";
 import { OnboardingTour } from "@/components/OnboardingTour";
+import { AnalyticsBoot } from "@/components/AnalyticsBoot";
 import { getDevUser } from "@/lib/dev-user";
 
 // The entire authenticated shell depends on per-user DB data (current user,
@@ -78,6 +79,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           we re-check on every navigation, so the tour shows after settings
           reset without needing a hard page reload. */}
       <OnboardingTour />
+      {/* Analytics boot — calls identify(userId) once. No-op when
+          NEXT_PUBLIC_POSTHOG_KEY is unset (local dev / preview). */}
+      <AnalyticsBoot userId={user.id} />
     </div>
   );
 }

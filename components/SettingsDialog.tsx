@@ -16,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { toast } from "@/components/ui/toaster";
 import { cn } from "@/lib/utils";
+import { track } from "@/lib/analytics";
 
 export interface SettingsState {
   defaultSourceLang: string;
@@ -127,7 +128,13 @@ export function SettingsDialog({
     <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => {
       setSettings((prev) => ({ ...prev, [key]: value }));
       // Only persist after initial load to avoid clobbering with defaults
-      if (loaded) queuePatch({ [key]: value } as Partial<SettingsState>);
+      if (loaded) {
+        queuePatch({ [key]: value } as Partial<SettingsState>);
+        // Track only the key name — values like floatingFontSize go through
+        // a debounced slider so per-pixel events would be way too noisy.
+        // What we actually want is "which settings users tweak at all".
+        track("settings_changed", { key });
+      }
     },
     [loaded, queuePatch]
   );

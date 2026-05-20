@@ -23,6 +23,7 @@ import {
   type FontScalePreset,
   ViewerToolbar,
 } from "@/components/ViewerToolbar";
+import { track } from "@/lib/analytics";
 
 interface LiveShareViewerProps {
   token: string;
@@ -382,6 +383,21 @@ function readInitialViewerLang(fallback: string): SupportedLanguage {
   return "en";
 }
 
+/**
+ * Lightweight non-cryptographic hash of the share token for analytics
+ * grouping. We want "viewers per link" without ever sending the token
+ * itself (which is the bearer used to read /api/live-share/{token}).
+ * DJB2 — collision-rate is fine at this scale.
+ */
+function hashToken(token: string): string {
+  let h = 5381;
+  for (let i = 0; i < token.length; i++) {
+    h = ((h << 5) + h + token.charCodeAt(i)) | 0;
+  }
+  // Base36 keeps the value short for the events table — 7 chars is plenty.
+  return (h >>> 0).toString(36);
+}
+
 const STALE_THRESHOLD_MS = 30_000;
 
 export function LiveShareViewer({
@@ -437,6 +453,22 @@ export function LiveShareViewer({
     setTheme(readInitialTheme());
     setFontScale(readInitialFontScale());
   }, []);
+
+  // Fire-once analytics: someone followed a share link. The viewer is
+  // anonymous (no login), so we don't identify() here — PostHog keeps an
+  // anonymous distinct_id per browser, which is exactly what we want for
+  // "how many distinct viewers per link" funnel questions. We do NOT pass
+  // the token through props (it's the bearer for /api/live-share/{token});
+  // a hash is enough to group views per link without leaking the secret.
+  const sharedOpenedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (sharedOpenedRef.current) return;
+    sharedOpenedRef.current = true;
+    track("share_link_opened", {
+      role: "viewer",
+      tokenHash: hashToken(token),
+    });
+  }, [token]);
 
   React.useEffect(() => {
     try {

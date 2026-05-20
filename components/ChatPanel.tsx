@@ -34,6 +34,7 @@ import {
   type ChatSessionDTO,
   type SessionDTO,
 } from "@/lib/contracts";
+import { track } from "@/lib/analytics";
 
 const FLAGS: Record<string, string> = {
   en: "🇺🇸",
@@ -309,6 +310,10 @@ export function ChatPanel(props: Props) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : "发送失败";
         toast.error(msg);
+        track("bug_encountered", {
+          source: "chat",
+          errorName: err instanceof Error ? err.name : "unknown",
+        });
         if (replaceAssistantId) {
           // Leave the original assistant bubble visible but stop the spinner.
           setMessages((prev) =>

@@ -6,6 +6,7 @@ import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import type { MinutesDTO } from "@/lib/contracts";
+import { track } from "@/lib/analytics";
 
 export interface GenerateMinutesButtonProps
   extends Omit<ButtonProps, "onClick" | "children"> {
@@ -29,6 +30,7 @@ export function GenerateMinutesButton({
 
   const generate = async () => {
     setPending(true);
+    const startedAt = Date.now();
     try {
       const resp = await fetch(`/api/sessions/${sessionId}/minutes/generate`, {
         method: "POST",
@@ -43,6 +45,10 @@ export function GenerateMinutesButton({
         // Body may be streaming/empty — that's okay
       }
       toast.success("纪要已生成");
+      track("minutes_generated", {
+        sessionId,
+        durationMs: Date.now() - startedAt,
+      });
       if (minutes && onGenerated) {
         onGenerated(minutes);
       } else {
@@ -51,6 +57,11 @@ export function GenerateMinutesButton({
     } catch (err) {
       const msg = err instanceof Error ? err.message : "生成失败";
       toast.error(msg);
+      track("minutes_failed", {
+        sessionId,
+        durationMs: Date.now() - startedAt,
+        errorName: err instanceof Error ? err.name : "unknown",
+      });
     } finally {
       setPending(false);
     }

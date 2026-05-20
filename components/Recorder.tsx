@@ -51,6 +51,7 @@ import { MinutesView } from "@/components/MinutesView";
 import { RecorderSidebar } from "@/components/RecorderSidebar";
 import { isChromeTranslatorAvailable } from "@/lib/translation/chrome-local";
 import { Recorder as AudioRecorder } from "@/lib/audio/recorder";
+import { track } from "@/lib/analytics";
 import type {
   AudioSource,
   MinutesSection,
@@ -155,6 +156,20 @@ function speakerColor(speakerId: number | undefined): string {
 function speakerLabel(speakerId: number | undefined): string {
   if (speakerId == null) return "说话人";
   return `Speaker ${speakerId}`;
+}
+
+/**
+ * Recorder error messages from fetchWithRetry look like
+ *   "POST /api/audio/chunk-record -> 503: <body>"
+ * We pull the status number out so analytics can group failures by
+ * 4xx (auth/quota) vs 5xx (server/storage). Returns null if no status
+ * is parseable — the message format isn't guaranteed.
+ */
+function parseStatusFromMessage(message: string): number | null {
+  const match = message.match(/->\s*(\d{3})/);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
 }
 
 // ------------------------------------------------------------------
@@ -322,6 +337,31 @@ export function Recorder({
       } else {
         toast.error(msg);
       }
+
+      // Analytics: chunk_upload_failed gets its own event (its statusCode
+      // is the most useful filter — auth/storage/quota all manifest as
+      // distinct 4xx/5xx). Every other "real" error rolls up under
+      // bug_encountered with source="recorder" so we can spot trends
+      // without enumerating Soniox/Translator/etc codes individually.
+      if (code === "chunk_upload_failed") {
+        const status = parseStatusFromMessage(msg);
+        track("chunk_upload_failed", {
+          statusCode: status,
+          // Recoverable vs not tells us whether the user actually saw a
+          // red toast (likely churn driver) vs a silent retry.
+          recoverable: event.error.recoverable,
+        });
+      } else if (
+        code !== "device_recovered" &&
+        code !== "ws_recovered" &&
+        code !== "device_disconnected"
+      ) {
+        track("bug_encountered", {
+          source: "recorder",
+          code,
+          recoverable: event.error.recoverable,
+        });
+      }
     }
   }, []);
 
@@ -385,9 +425,22 @@ export function Recorder({
       recorderRef.current = rec;
       await rec.start();
       dispatch({ type: "started", at: Date.now() });
+      track("recording_started", {
+        sessionId: session.id,
+        audioSource,
+        sourceLang,
+        targetLang,
+        translationMode,
+        resumed: Boolean(resumeSessionId),
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not start recording";
       toast.error(msg);
+      track("recording_failed", {
+        // err.name is "TypeError" / "NotAllowedError" / etc — not PII.
+        errorName: err instanceof Error ? err.name : "unknown",
+        stage: "start",
+      });
       const rec = recorderRef.current;
       if (rec) {
         await rec.stop().catch(() => {});
@@ -412,18 +465,38 @@ export function Recorder({
   const stopRecording = React.useCallback(async () => {
     const rec = recorderRef.current;
     const id = sessionId;
+    const startedAt = state.startedAt;
     minutesAbortRef.current?.abort();
+    let stopError: unknown = null;
     try {
       if (rec) await rec.stop();
     } catch (err) {
+      stopError = err;
       const msg = err instanceof Error ? err.message : "Stop failed";
       toast.error(msg);
     } finally {
       recorderRef.current = null;
       dispatch({ type: "reset" });
+      const durationMs =
+        startedAt != null ? Math.max(0, Date.now() - startedAt) : 0;
+      if (stopError) {
+        track("recording_failed", {
+          errorName: stopError instanceof Error ? stopError.name : "unknown",
+          stage: "stop",
+          sessionId: id ?? null,
+          durationMs,
+        });
+      } else {
+        track("recording_stopped", {
+          sessionId: id ?? null,
+          durationMs,
+          audioSource,
+          translationMode,
+        });
+      }
       if (id) router.push(`/dashboard/history/${id}`);
     }
-  }, [sessionId, router]);
+  }, [sessionId, router, state.startedAt, audioSource, translationMode]);
 
   const refreshLiveMinutes = React.useCallback(
     async (opts?: { silent?: boolean }) => {

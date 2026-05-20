@@ -10,6 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { track } from "@/lib/analytics";
 
 export interface ExportMenuProps {
   sessionId: string;
@@ -34,6 +35,11 @@ export function ExportMenu({ sessionId, hasAudio = true, className }: ExportMenu
           toast(body?.error ?? "暂不支持");
         } else {
           toast.error(`导出失败 (${resp.status})`);
+          track("bug_encountered", {
+            source: "export",
+            statusCode: resp.status,
+            format: fmt,
+          });
         }
         return;
       }
@@ -52,6 +58,11 @@ export function ExportMenu({ sessionId, hasAudio = true, className }: ExportMenu
       toast.success(`已导出 ${filename}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "导出失败");
+      track("bug_encountered", {
+        source: "export",
+        errorName: err instanceof Error ? err.name : "unknown",
+        format: fmt,
+      });
     } finally {
       setBusy(null);
     }
