@@ -14,9 +14,11 @@ import {
   Settings,
   Sparkles,
   Languages,
-  SunMoon,
+  Moon,
+  Sun,
   LogOut,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,8 @@ import { Separator } from "@/components/ui/separator";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { UserMenuBadge } from "@/components/UserMenuBadge";
 import { SidebarChatHistory } from "@/components/SidebarChatHistory";
+
+const THEME_STORAGE_KEY = "voice-project:theme";
 
 export interface SidebarNavProps {
   userName?: string;
@@ -140,6 +144,36 @@ export function SidebarNav({
   const initial = (userInitial ?? userName.charAt(0) ?? "U").toUpperCase();
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
+  // ---- theme (dark / light) ----
+  // Hydrate from localStorage on mount so a previously-chosen dark mode
+  // sticks across reloads. We default to undefined (= use whatever the
+  // <html> class already has) and flip the class on click. globals.css
+  // ships both :root and .dark CSS-vars, so Tailwind dark: utilities
+  // throughout the app respond immediately to the class toggle.
+  const [isDark, setIsDark] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof document === "undefined") return;
+    const stored =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem(THEME_STORAGE_KEY)
+        : null;
+    const initiallyDark =
+      stored === "dark" || document.documentElement.classList.contains("dark");
+    document.documentElement.classList.toggle("dark", initiallyDark);
+    setIsDark(initiallyDark);
+  }, []);
+  const toggleTheme = React.useCallback(() => {
+    if (typeof document === "undefined") return;
+    const next = !document.documentElement.classList.contains("dark");
+    document.documentElement.classList.toggle("dark", next);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light");
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+    setIsDark(next);
+  }, []);
+
   return (
     <aside
       className={cn(
@@ -250,8 +284,13 @@ export function SidebarNav({
           variant="ghost"
           size="icon"
           aria-label="切换语言"
+          title="切换界面语言"
           onClick={() => {
-            /* no-op for phase 1 */
+            // UI is hard-coded zh-CN today; full i18n is out of scope
+            // for this pass. Keep the button as a discoverable
+            // placeholder rather than a no-op the user can't tell from
+            // a broken click.
+            toast("界面语言切换即将上线");
           }}
         >
           <Languages className="h-4 w-4" />
@@ -259,12 +298,15 @@ export function SidebarNav({
         <Button
           variant="ghost"
           size="icon"
-          aria-label="切换主题"
-          onClick={() => {
-            /* no-op for phase 1 */
-          }}
+          aria-label={isDark ? "切换到浅色主题" : "切换到深色主题"}
+          title={isDark ? "切换到浅色主题" : "切换到深色主题"}
+          onClick={toggleTheme}
         >
-          <SunMoon className="h-4 w-4" />
+          {isDark ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
         </Button>
         <Button
           variant="ghost"

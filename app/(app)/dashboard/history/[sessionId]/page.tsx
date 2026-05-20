@@ -219,7 +219,13 @@ export default async function SessionDetailPage({
       <Tabs defaultValue="transcript" className="w-full">
         <TabsList>
           <TabsTrigger value="transcript">转录</TabsTrigger>
-          <TabsTrigger value="live-minutes">实时纪要</TabsTrigger>
+          {/* "实时纪要" and "纪要" used to be two tabs that rendered the
+              SAME Minutes row in two styles — sections-with-timestamps
+              vs. raw markdown — and users (rightly) read this as a bug
+              ("俩边完全一致"). They're merged into one tab now;
+              MinutesView prefers section cards when they exist (richer
+              UI with time ranges) and falls back to the markdown
+              renderer for legacy rows that only have contentMd. */}
           <TabsTrigger value="minutes">纪要</TabsTrigger>
         </TabsList>
 
@@ -238,20 +244,15 @@ export default async function SessionDetailPage({
           )}
         </TabsContent>
 
-        <TabsContent value="live-minutes">
+        <TabsContent value="minutes">
           {minutesSections && minutesSections.length > 0 ? (
             <div className="rounded-[10px] border border-zinc-100 bg-white p-6 dark:border-zinc-900 dark:bg-zinc-950">
-              <MinutesView sections={minutesSections} />
+              <MinutesView
+                sections={minutesSections}
+                contentMd={minutesContentMd}
+              />
             </div>
-          ) : (
-            <div className="rounded-[10px] border border-zinc-100 bg-white p-10 text-center text-sm text-zinc-500 dark:border-zinc-900 dark:bg-zinc-950">
-              尚未生成 — 切换到下一个 tab 触发生成
-            </div>
-          )}
-        </TabsContent>
-
-        <TabsContent value="minutes">
-          {minutesContentMd ? (
+          ) : minutesContentMd ? (
             <div className="rounded-[10px] border border-zinc-100 bg-white p-6 dark:border-zinc-900 dark:bg-zinc-950">
               <MinutesView contentMd={minutesContentMd} />
             </div>

@@ -9,9 +9,14 @@ const langSchema = z.string().min(2).max(16);
 
 const createBodySchema = z.object({
   name: z.string().min(1).max(120),
-  color: z.string().max(32).optional(),
-  sourceLang: langSchema.optional(),
-  targetLang: langSchema.optional(),
+  // `.nullish()` matches the PATCH schema in [id]/route.ts so clients
+  // can send `color: null` (used for the "灰" / default option in
+  // CreateFolderCard's palette) without hitting a 400. Without this
+  // the POST silently failed for any folder created via the default
+  // color picker.
+  color: z.string().max(32).nullish(),
+  sourceLang: langSchema.nullish(),
+  targetLang: langSchema.nullish(),
 });
 
 export async function GET() {

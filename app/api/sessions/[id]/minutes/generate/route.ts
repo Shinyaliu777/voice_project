@@ -118,6 +118,23 @@ export async function POST(
     orderBy: { segmentIndex: "asc" },
   });
 
+  // Skip the LLM round-trip when there's nothing to summarize. Without
+  // this guard, a 0-second draft session would still spin DeepSeek for
+  // 10-30s producing garbage from an empty prompt, leaving the user
+  // staring at a spinner (reported as "生成纪要一直转圈"). 422 is the
+  // right status here: the request was well-formed, but the resource
+  // doesn't have the precondition (any transcript) required to fulfil
+  // it.
+  const hasUsableContent = segments.some(
+    (s) => (s.sourceText && s.sourceText.trim()) || (s.translatedText && s.translatedText.trim())
+  );
+  if (!hasUsableContent) {
+    return NextResponse.json(
+      { error: "没有可用于生成纪要的转录内容" },
+      { status: 422 }
+    );
+  }
+
   const messages = buildMinutesPrompt({
     segments: segments.map(toSegmentDTO),
     sourceLang: session.sourceLang,

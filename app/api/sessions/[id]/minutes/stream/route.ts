@@ -267,6 +267,18 @@ export async function POST(
     orderBy: { segmentIndex: "asc" },
   });
 
+  // Same empty-transcript guard as generate/route.ts — bail with 422
+  // before spinning the LLM. Mirrors the guard on the non-stream path.
+  const hasUsableContent = segments.some(
+    (s) => (s.sourceText && s.sourceText.trim()) || (s.translatedText && s.translatedText.trim())
+  );
+  if (!hasUsableContent) {
+    return NextResponse.json(
+      { error: "没有可用于生成纪要的转录内容" },
+      { status: 422 }
+    );
+  }
+
   const messages = buildMinutesPrompt({
     segments: segments.map(toSegmentDTO),
     sourceLang: session.sourceLang,
