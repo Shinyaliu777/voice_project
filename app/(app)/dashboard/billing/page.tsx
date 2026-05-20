@@ -10,10 +10,42 @@ import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
+// Mirrors lib/quota.ts — anything north of this on a Plan's
+// monthlyMinutes is treated as "effectively unlimited" and we render
+// ∞ / no progress bar instead of a misleadingly empty 6 / 999999 ratio.
+const RECORDING_UNLIMITED_THRESHOLD = 100_000;
+
 function fmtCents(cents: number): string {
   if (cents === 0) return "免费";
   // Pricing is stored in USD cents (matches lecsync's schema).
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+/** "X 天后重置" for monthly recording quota (server-clock based). */
+function resetInForRecording(): string {
+  const now = new Date();
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const days = Math.max(
+    1,
+    Math.ceil((nextMonth.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+  );
+  return `${days} 天后重置`;
+}
+
+/** "X 小时后重置" for daily chat quota. Falls back to "1 小时" min so
+ *  we never render "0 小时后重置" right before midnight. */
+function resetInForChat(): string {
+  const now = new Date();
+  const tomorrow = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1
+  );
+  const hours = Math.max(
+    1,
+    Math.ceil((tomorrow.getTime() - now.getTime()) / (1000 * 60 * 60))
+  );
+  return `${hours} 小时后重置`;
 }
 
 function fmtMinutes(n: number): string {
@@ -77,14 +109,16 @@ export default async function BillingPage() {
             used={recording.used}
             limit={recording.limit}
             unit="分钟"
-            unlimited={!isFinite(recording.remaining)}
+            unlimited={recording.limit >= RECORDING_UNLIMITED_THRESHOLD}
+            resetIn={resetInForRecording()}
           />
           <UsageBar
             label="今日 AI 对话"
             used={chat.used}
             limit={chat.limit}
             unit="条"
-            unlimited={!isFinite(chat.remaining)}
+            unlimited={chat.limit === 0}
+            resetIn={resetInForChat()}
           />
         </CardContent>
       </Card>
@@ -190,36 +224,60 @@ function UsageBar({
   limit,
   unit,
   unlimited,
+  resetIn,
 }: {
   label: string;
   used: number;
   limit: number;
   unit: string;
   unlimited: boolean;
+  resetIn?: string;
 }) {
-  const pct = unlimited
+  const rawPct = unlimited
     ? 0
     : Math.min(100, Math.round((used / Math.max(1, limit)) * 100));
+  // When used > 0 but the ratio rounds down to under ~2%, the filled
+  // segment is so short it looks empty — users reported "进度条没填".
+  // Floor at 2.5% for any non-zero usage so a tiny sliver is always
+  // visible, while ratios above that stay accurate.
+  const displayPct = !unlimited && used > 0 && rawPct < 2.5 ? 2.5 : rawPct;
+  const remaining = unlimited
+    ? null
+    : Math.max(0, limit - used);
   return (
     <div>
-      <div className="mb-2 flex items-baseline justify-between text-sm">
+      <div className="mb-2 flex items-baseline justify-between gap-2 text-sm">
         <span className="text-zinc-700 dark:text-zinc-200">{label}</span>
-        <span className="font-mono text-xs tabular-nums text-zinc-500">
+        <span className="font-mono text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
           {used.toLocaleString()} / {unlimited ? "∞" : limit.toLocaleString()} {unit}
         </span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-900">
+      {/* Stronger track contrast — bg-zinc-100/zinc-900 used to blend
+          into the Card surface in dark mode so the bar looked invisible
+          when usage was tiny. zinc-200/zinc-800 reads as an actual
+          channel against either Card background. */}
+      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
         <div
           className={cn(
             "h-full rounded-full transition-all",
-            pct >= 90
+            rawPct >= 90
               ? "bg-rose-500"
-              : pct >= 70
+              : rawPct >= 70
                 ? "bg-amber-500"
                 : "bg-zinc-700 dark:bg-zinc-300"
           )}
-          style={{ width: `${unlimited ? 0 : pct}%` }}
+          style={{ width: `${unlimited ? 0 : displayPct}%` }}
         />
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
+        <span>
+          {unlimited
+            ? "无限额度"
+            : remaining === 0
+              ? "已用完 — 升级套餐解锁"
+              : `剩余 ${remaining!.toLocaleString()} ${unit}`}
+        </span>
+        {resetIn ? <span>{resetIn}</span> : null}
       </div>
     </div>
   );
