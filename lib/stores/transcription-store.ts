@@ -220,11 +220,28 @@ export const useTranscriptionStore = create<TranscriptionStore>()(
 
       addSegment: (seg) =>
         set(
-          (s) => ({
-            segments: [...s.segments, seg],
-            partialTranscript: seg.isFinal ? "" : s.partialTranscript,
-            partialTranslation: seg.isFinal ? "" : s.partialTranslation,
-          }),
+          (s) => {
+            // Upsert by id: lecsync's WS path re-emits final transcripts
+            // when a cloud-translation patch arrives, which would
+            // otherwise create duplicate rows for the same segmentId.
+            // Merge into the existing row (preserving fields the new
+            // emission omits, e.g. translation accumulated separately).
+            const existingIdx = s.segments.findIndex((x) => x.id === seg.id);
+            if (existingIdx >= 0) {
+              const merged = [...s.segments];
+              merged[existingIdx] = { ...merged[existingIdx], ...seg };
+              return {
+                segments: merged,
+                partialTranscript: seg.isFinal ? "" : s.partialTranscript,
+                partialTranslation: seg.isFinal ? "" : s.partialTranslation,
+              };
+            }
+            return {
+              segments: [...s.segments, seg],
+              partialTranscript: seg.isFinal ? "" : s.partialTranscript,
+              partialTranslation: seg.isFinal ? "" : s.partialTranslation,
+            };
+          },
           false,
           "addSegment"
         ),

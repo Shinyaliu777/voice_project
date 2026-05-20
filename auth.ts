@@ -32,6 +32,25 @@ import {
 const allowDevLogin =
   process.env.NODE_ENV !== "production" || process.env.ALLOW_DEV_LOGIN === "1";
 
+const hasGoogle =
+  !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
+
+// CRITICAL SAFETY GUARD: dev-login + Google together in prod is a
+// take-over-anyone attack — the dev-login credentials provider does an
+// upsert on email, so typing "victim@example.com" yields a session as
+// that user even if they originally signed up via Google. Bail at
+// import time if both flags are set in production; this can't be
+// recovered from at request time.
+if (
+  process.env.NODE_ENV === "production" &&
+  hasGoogle &&
+  process.env.ALLOW_DEV_LOGIN === "1"
+) {
+  throw new Error(
+    "[auth] Refusing to boot: ALLOW_DEV_LOGIN=1 with Google OAuth enabled in production is an account-takeover vector. Disable one."
+  );
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
@@ -45,7 +64,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     signIn: "/login",
   },
   providers: [
-    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+    ...(hasGoogle
       ? [
           Google({
             clientId: process.env.GOOGLE_CLIENT_ID,
@@ -87,19 +106,32 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
      *
      * Existing users (email already in DB) always sign in. New accounts
      * require a valid `pending_invite` cookie (set by
-     * /api/invite/validate) iff INVITE_REQUIRED=1. Without the cookie,
-     * we return false → NextAuth aborts before creating the row.
+     * /api/invite/validate). To prevent two browsers using the same code
+     * from both succeeding (the original implementation re-read status
+     * and then proceeded, leaving a race window), we atomically reserve
+     * the code here:
      *
-     * The actual claim (mark Invitation as claimed + set
-     * User.invitedById) happens in events.createUser below, where we
-     * have the user.id.
+     *   UPDATE Invitation
+     *      SET status = 'reserved', claimedAt = now()
+     *    WHERE code = ? AND status = 'pending' AND (expiresAt is null OR expiresAt > now())
+     *
+     * Only one updateMany wins. The createUser hook below then upgrades
+     * the row to 'claimed' once the user.id is available. If createUser
+     * never runs (e.g. sign-in aborts mid-flow), reserved rows are
+     * treated as available again by /validate after a grace window.
+     *
+     * Case sensitivity: Postgres `String @unique` is case-sensitive,
+     * but NextAuth providers return the email in whatever case the
+     * upstream IdP uses. We compare via `findFirst` with `mode:
+     * "insensitive"` so Foo@Gmail.com and foo@gmail.com map to the
+     * same row.
      */
     async signIn({ user }) {
       if (!INVITE_REQUIRED) return true;
       const email = user.email?.toLowerCase().trim();
       if (!email) return false;
-      const existing = await prisma.user.findUnique({
-        where: { email },
+      const existing = await prisma.user.findFirst({
+        where: { email: { equals: email, mode: "insensitive" } },
         select: { id: true },
       });
       if (existing) return true; // existing accounts bypass the gate
@@ -107,18 +139,30 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       const cookieStore = await cookies();
       const pending = cookieStore.get(PENDING_INVITE_COOKIE)?.value;
       if (!pending) return false;
-      // Re-check the code is still valid right now — the user could have
-      // sat on the cookie past expiry, or someone else could have
-      // claimed it between validate and signIn.
-      const inv = await prisma.invitation.findUnique({
-        where: { code: pending },
-        select: { status: true, expiresAt: true },
+
+      // Atomic reserve — pending→reserved. Only one concurrent sign-in
+      // can flip the row, so simultaneous sign-ups with the same code
+      // resolve to one winner. Also recovers `reserved` rows older
+      // than RESERVE_GRACE_MS — they're presumed abandoned by a
+      // browser that crashed mid-OAuth.
+      const RESERVE_GRACE_MS = 10 * 60 * 1000;
+      const staleReservedCutoff = new Date(Date.now() - RESERVE_GRACE_MS);
+      const reserved = await prisma.invitation.updateMany({
+        where: {
+          code: pending,
+          OR: [
+            { status: "pending" },
+            { status: "reserved", claimedAt: { lt: staleReservedCutoff } },
+          ],
+          AND: [
+            {
+              OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+            },
+          ],
+        },
+        data: { status: "reserved", claimedAt: new Date() },
       });
-      if (!inv || inv.status !== "pending") return false;
-      if (inv.expiresAt !== null && inv.expiresAt.getTime() < Date.now()) {
-        return false;
-      }
-      return true;
+      return reserved.count === 1;
     },
     async jwt({ token, user }) {
       // `user` is only present on initial sign-in. Persist the DB id
@@ -175,39 +219,49 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         }
       }
 
-      // Claim the pending invite if present. Atomic transaction so a
-      // double-spend race resolves to one winner; the loser sees the
-      // code as already claimed and the new user simply has no inviter
-      // recorded — preferable to crashing signup.
+      // Finalize the invite claim that signIn() reserved. By the time
+      // we're here, the row is already status='reserved' with
+      // claimedAt set — we just need to upgrade to 'claimed' and
+      // attach claimedByUserId/invitedById. If signIn somehow let us
+      // through without a reserve (shouldn't happen when
+      // INVITE_REQUIRED is on, but possible when it's off and the
+      // user pasted a code anyway), we skip silently.
       try {
         const cookieStore = await cookies();
         const code = cookieStore.get(PENDING_INVITE_COOKIE)?.value;
         if (code && user.id) {
           await prisma.$transaction(async (tx) => {
+            const inv = await tx.invitation.findUnique({
+              where: { code },
+              select: { status: true, createdByUserId: true },
+            });
+            if (!inv) return;
+            // INVITE_REQUIRED path: row is 'reserved' from signIn.
+            // INVITE_REQUIRED-off path: row is still 'pending'. Accept
+            // both so a wide-open instance with codes can still
+            // attribute invitations correctly.
+            if (inv.status !== "reserved" && inv.status !== "pending") {
+              return;
+            }
             const claim = await tx.invitation.updateMany({
-              where: { code, status: "pending" },
+              where: {
+                code,
+                status: { in: ["reserved", "pending"] },
+                claimedByUserId: null,
+              },
               data: {
                 status: "claimed",
                 claimedByUserId: user.id,
                 claimedAt: new Date(),
               },
             });
-            if (claim.count === 1) {
-              // Look up the inviter so we can stamp it on the new user.
-              const inv = await tx.invitation.findUnique({
-                where: { code },
-                select: { createdByUserId: true },
+            if (claim.count === 1 && user.id) {
+              await tx.user.update({
+                where: { id: user.id },
+                data: { invitedById: inv.createdByUserId },
               });
-              if (inv && user.id) {
-                await tx.user.update({
-                  where: { id: user.id },
-                  data: { invitedById: inv.createdByUserId },
-                });
-              }
             }
           });
-          // Clear the cookie either way — we either claimed it or
-          // someone else did.
           cookieStore.delete(PENDING_INVITE_COOKIE);
         }
       } catch (err) {

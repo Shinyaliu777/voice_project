@@ -47,10 +47,17 @@ export function generateInviteCode(length = DEFAULT_LENGTH): string {
  * Existing users (those already in the DB) bypass this — sign-in for
  * existing accounts is always permitted.
  *
- * Default: false (open registration). Set INVITE_REQUIRED=1 in prod
- * to flip the gate on for the closed beta.
+ * Default: false (open registration). Set INVITE_REQUIRED to any
+ * truthy string ("1", "true", "yes", "on") in prod to flip the gate
+ * on for the closed beta. Accepting more than "1" is intentional —
+ * an ops team that puts `INVITE_REQUIRED=true` in .env and assumes
+ * the gate is on would otherwise silently launch the beta wide open.
  */
-export const INVITE_REQUIRED = process.env.INVITE_REQUIRED === "1";
+function envFlag(value: string | undefined): boolean {
+  if (!value) return false;
+  return /^(1|true|yes|on)$/i.test(value.trim());
+}
+export const INVITE_REQUIRED = envFlag(process.env.INVITE_REQUIRED);
 
 /** Initial invite quota seeded onto every new user (defaults to 0 for
  *  closed beta — admin manually bumps trusted users). Override via
