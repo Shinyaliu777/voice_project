@@ -60,3 +60,18 @@ export const PENDING_INVITE_COOKIE = "pending_invite";
  *  since the cookie no longer locks the code (it's just an attribution
  *  carrier). */
 export const PENDING_INVITE_TTL_SECONDS = 60 * 30;
+
+/**
+ * Minutes of recording the inviter gets credited per successful new
+ * signup that uses their code. Lecsync's stub UI mentioned +60/invite
+ * up to 1500, so we match that bar by default. Override via env if
+ * you want to dial the incentive up or down.
+ *
+ * No self-referral payout — auth.ts events.createUser compares the
+ * inviter's email (lowercased) to the new user's email and skips the
+ * bonus if they match.
+ */
+export function referralBonusMinutes(): number {
+  const raw = Number.parseInt(process.env.REFERRAL_BONUS_MINUTES ?? "60", 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 60;
+}

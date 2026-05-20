@@ -5,7 +5,10 @@ import Credentials from "next-auth/providers/credentials";
 import { cookies } from "next/headers";
 
 import { prisma } from "@/lib/db";
-import { PENDING_INVITE_COOKIE } from "@/lib/invite";
+import {
+  PENDING_INVITE_COOKIE,
+  referralBonusMinutes,
+} from "@/lib/invite";
 
 /**
  * NextAuth (Auth.js v5) configuration.
@@ -136,15 +139,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         console.warn("[auth] failed to seed default subscription", err);
       }
 
-      // Optional referral attribution. If the signup carried a code
-      // via the pending_invite cookie (set by /api/invite/validate),
-      // bump the code's claimCount and stamp invitedById on the new
-      // user. Codes are reusable so we don't change their status —
-      // a single code can attribute any number of new users.
+      // Optional referral attribution + bonus.
+      //
+      // If the signup carried a code via the pending_invite cookie
+      // (set by /api/invite/validate):
+      //   - bump the code's claimCount
+      //   - stamp invitedById on the new user
+      //   - credit the inviter with REFERRAL_BONUS_MINUTES extra
+      //     monthly recording minutes (skipped on self-invite —
+      //     same email is the simple defence; the inviter and new
+      //     user both have addresses NextAuth knows about, and case-
+      //     insensitive equality is sufficient for "same person").
+      // Codes are reusable so we don't change their status.
       try {
         const cookieStore = await cookies();
         const code = cookieStore.get(PENDING_INVITE_COOKIE)?.value;
         if (code && user.id) {
+          const bonus = referralBonusMinutes();
           await prisma.$transaction(async (tx) => {
             const inv = await tx.invitation.findUnique({
               where: { code },
@@ -153,11 +164,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                 isActive: true,
                 expiresAt: true,
                 createdByUserId: true,
+                createdBy: { select: { email: true } },
               },
             });
             if (!inv) return;
             if (!inv.isActive) return;
             if (inv.expiresAt && inv.expiresAt.getTime() < Date.now()) return;
+
+            const inviterEmail = inv.createdBy.email.toLowerCase().trim();
+            const newUserEmail = user.email?.toLowerCase().trim() ?? "";
+            const isSelfInvite =
+              inviterEmail !== "" && inviterEmail === newUserEmail;
+
             await tx.invitation.update({
               where: { id: inv.id },
               data: { claimCount: { increment: 1 } },
@@ -166,6 +184,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               await tx.user.update({
                 where: { id: user.id },
                 data: { invitedById: inv.createdByUserId },
+              });
+            }
+            // Pay the bonus only on non-self invites and only when a
+            // positive bonus is configured.
+            if (!isSelfInvite && bonus > 0) {
+              await tx.user.update({
+                where: { id: inv.createdByUserId },
+                data: { referralBonusMinutes: { increment: bonus } },
               });
             }
           });

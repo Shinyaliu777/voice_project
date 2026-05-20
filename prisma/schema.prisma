@@ -25,14 +25,18 @@ model User {
   /// ships, derive from Subscription.plan in the route handler.
   maxConcurrentRecordings Int       @default(1)
 
-  // ---- Referral attribution (NOT a gate) -----------------------------
+  // ---- Referral attribution + reward ---------------------------------
   // Registration is always open. When a new user signs up via a link
   // carrying `?invite=CODE` (or types the code into the optional
-  // field on /login), we stamp `invitedById` here — purely for
-  // attribution / future reward mechanics. There is no quota: any
-  // user can generate referral codes, and any code can be reused by
-  // any number of signups.
-  invitedById String?
+  // field on /login), we stamp `invitedById` here AND bump
+  // `referralBonusMinutes` on the inviter by REFERRAL_BONUS_MINUTES
+  // (env, default 60). Self-invites (same email lowercased) get
+  // attribution but skip the reward.
+  invitedById          String?
+  /// Extra monthly recording minutes earned via referrals, on TOP
+  /// of the user's Plan-defined monthlyMinutes cap. Persists across
+  /// months — once earned, never decays. Cap calc is in lib/quota.ts.
+  referralBonusMinutes Int     @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

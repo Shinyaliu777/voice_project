@@ -26,6 +26,7 @@ interface RecentInvitee {
 }
 
 interface ListResponse {
+  referralBonusMinutes: number;
   invitations: InviteRow[];
   recentInvitees: RecentInvitee[];
 }
@@ -113,15 +114,40 @@ export function InvitesManager() {
 
   return (
     <div className="flex flex-col gap-5">
-      <section className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+      {/* Reward summary — the headline incentive: every successful
+          invite earns the inviter +60 monthly recording minutes (cap
+          configured server-side via REFERRAL_BONUS_MINUTES env). */}
+      <section className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 dark:border-amber-900/40 dark:from-amber-950/30 dark:to-zinc-900">
         <div className="flex items-center gap-3">
           <Gift className="h-5 w-5 text-amber-500" />
+          <div className="flex-1">
+            <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+              邀请一位好友 = +60 分钟录音
+            </div>
+            <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              新用户使用你的邀请码注册成功后，你的本月录音额度自动 +60 分钟。
+              已获得的额度跨月保留，永不清零。
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-2xl font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+              +{data.referralBonusMinutes}
+            </div>
+            <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              已获得分钟
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex items-center gap-3">
           <div className="flex-1">
             <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
               生成邀请码
             </div>
             <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-              一个邀请码可以被多人使用。生成后分享链接或邀请码均可。
+              一个邀请码可以被多人使用，每个新用户都会给你 +60 分钟。
             </div>
           </div>
           <span className="text-xs text-zinc-500 dark:text-zinc-400">

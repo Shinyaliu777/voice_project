@@ -53,6 +53,19 @@ async function resolvePlanForUser(userId: string) {
 }
 
 /**
+ * The user's effective monthly recording cap = Plan.monthlyMinutes +
+ * any referralBonusMinutes earned by bringing in new signups. The
+ * bonus persists across months — once earned, never decays.
+ */
+async function getReferralBonusMinutes(userId: string): Promise<number> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { referralBonusMinutes: true },
+  });
+  return user?.referralBonusMinutes ?? 0;
+}
+
+/**
  * Minutes of recording consumed by this user in the current calendar
  * month. The unit is wall-clock recording time — "开始录音到停止录音"
  * — regardless of whether the speaker was talking or silent. This
@@ -143,9 +156,15 @@ export async function getQuota(
 ): Promise<QuotaInfo> {
   const plan = await resolvePlanForUser(userId);
   if (kind === "recording") {
-    const used = await getRecordingMinutesUsedThisMonth(userId);
-    const limit = plan.monthlyMinutes;
-    const unlimited = limit >= RECORDING_UNLIMITED_THRESHOLD;
+    const [used, bonus] = await Promise.all([
+      getRecordingMinutesUsedThisMonth(userId),
+      getReferralBonusMinutes(userId),
+    ]);
+    // Effective cap = plan's monthly minutes + cumulative referral bonus
+    // (which persists across months, so we add it whole, not pro-rated).
+    const baseLimit = plan.monthlyMinutes;
+    const limit = baseLimit + bonus;
+    const unlimited = baseLimit >= RECORDING_UNLIMITED_THRESHOLD;
     return {
       limit,
       used,
