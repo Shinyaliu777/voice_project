@@ -1,7 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
-import { getDevUserId } from "@/lib/dev-user";
+import {
+  requireActiveUserId,
+  UnauthenticatedError,
+  UserSuspendedError,
+} from "@/lib/dev-user";
 import type { SonioxTokenResp } from "@/lib/contracts";
 
 const bodySchema = z
@@ -12,7 +16,21 @@ const bodySchema = z
   .strict();
 
 export async function POST(req: NextRequest) {
-  const userId = await getDevUserId();
+  let userId: string;
+  try {
+    userId = await requireActiveUserId();
+  } catch (err) {
+    if (err instanceof UnauthenticatedError) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (err instanceof UserSuspendedError) {
+      return NextResponse.json(
+        { error: "Account suspended" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   // Body is optional for this route (all fields optional).
   let body: unknown = {};

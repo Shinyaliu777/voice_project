@@ -37,6 +37,21 @@ model User {
   /// of the user's Plan-defined monthlyMinutes cap. Persists across
   /// months — once earned, never decays. Cap calc is in lib/quota.ts.
   referralBonusMinutes Int     @default(0)
+  /// Persistent minute bucket from admin grants + redemption codes
+  /// (lecsync's "时长叠加包" / 兑换码 model). Adds to monthlyMinutes
+  /// like referralBonusMinutes; never decays. Source of truth for
+  /// "how many extra minutes do I have?" is User.bonusMinutes plus
+  /// referralBonusMinutes; quota.ts sums both.
+  bonusMinutes         Int     @default(0)
+
+  // ---- Admin / moderation -------------------------------------------
+  /// Promotes the user to /admin. Bootstrappable via ADMIN_EMAILS env
+  /// var so a fresh deploy can mint the first admin without raw SQL.
+  isAdmin     Boolean @default(false)
+  /// When true, all recording/transcription endpoints reject this user.
+  /// Used for abuse / refunds / off-boarding. Their history stays
+  /// intact — soft delete, not hard delete.
+  isSuspended Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -54,6 +69,11 @@ model User {
   invitedBy      User?        @relation("UserInvites", fields: [invitedById], references: [id])
   invitedUsers   User[]       @relation("UserInvites")
   createdInvites Invitation[] @relation("CreatedInvites")
+
+  // ---- Billing ledger / redemption ----------------------------------
+  redemptionsReceived Redemption[]        @relation("RedemptionsReceived")
+  redemptionCodes     RedemptionCode[]    @relation("CreatedRedemptionCodes")
+  minuteTransactions  MinuteTransaction[] @relation("MinuteTransactionUser")
 
   // ---- NextAuth -----------------------------------------------------
   // We use JWT session strategy so there's no separate Session table
@@ -522,4 +542,107 @@ model Invitation {
   createdBy User @relation("CreatedInvites", fields: [createdByUserId], references: [id], onDelete: Cascade)
 
   @@index([createdByUserId])
+}
+
+// =========================================================
+// Redemption codes + minute ledger (lecsync's 兑换码 + 流水)
+// =========================================================
+
+/// A redemption ("gift") code that grants the redeemer N bonus minutes.
+///
+/// Distinct from `Invitation` (which credits the INVITER): redemption
+/// codes credit the REDEEMER. Issued by admins via /admin/codes, or
+/// later by Stripe webhooks for one-time top-up purchases.
+///
+/// `code` is shown to users in uppercase with dashes (e.g.
+/// "GIFT-AB12-CD34"). Stored canonicalized (uppercase, dashes
+/// stripped) for case-insensitive lookup.
+///
+/// Multi-use codes: `maxUses` > 1 lets the same code be redeemed by
+/// up to that many distinct users. Each redemption gets its own
+/// Redemption row, and the unique([codeId, userId]) constraint stops
+/// one user from redeeming the same code twice.
+model RedemptionCode {
+  id           String    @id @default(cuid())
+  /// Canonicalized lookup key (uppercase, no dashes).
+  code         String    @unique
+  minutes      Int
+  maxUses      Int       @default(1)
+  /// Maintained by /api/me/redeem inside a transaction. Never write
+  /// directly without bumping a Redemption row at the same time.
+  usedCount    Int       @default(0)
+  expiresAt    DateTime?
+  /// Free-form admin note ("for Alice", "marketing campaign Q3", etc.).
+  note         String?
+  /// Soft-disable. Once true, redeem requests reject even if
+  /// usedCount < maxUses.
+  isActive     Boolean   @default(true)
+  /// Admin who issued the code (or "system" for Stripe-created codes;
+  /// kept nullable for that case).
+  createdById  String?
+  createdBy    User?     @relation("CreatedRedemptionCodes", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+
+  redemptions Redemption[]
+
+  @@index([createdById])
+}
+
+/// One row per (user, code) redemption. Both prevents double-redeem
+/// (via the unique constraint) and gives us an audit trail without
+/// having to parse the MinuteTransaction ledger.
+model Redemption {
+  id              String   @id @default(cuid())
+  codeId          String
+  userId          String
+  /// Snapshot of the code's `minutes` value at redemption time. We
+  /// freeze it here so future admin edits to the code don't retro-
+  /// actively change history.
+  minutesGranted  Int
+  redeemedAt      DateTime @default(now())
+
+  code RedemptionCode @relation(fields: [codeId], references: [id], onDelete: Cascade)
+  user User           @relation("RedemptionsReceived", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([codeId, userId])
+  @@index([userId])
+}
+
+/// Append-only ledger of every change to User.bonusMinutes (plus a
+/// few informational entries like the monthly Plan reset and the
+/// referral bonus credit). Powers lecsync's "查看历史交易流水记录"
+/// dialog and lets us reconstruct the bonusMinutes balance from
+/// scratch if a row ever drifts.
+///
+/// Negative `delta` for deductions (e.g. admin clawback). Positive
+/// for grants. Never UPDATE/DELETE rows once inserted — corrections
+/// are themselves new transactions.
+model MinuteTransaction {
+  id           String @id @default(cuid())
+  userId       String
+  user         User   @relation("MinuteTransactionUser", fields: [userId], references: [id], onDelete: Cascade)
+  /// Signed minute delta. Sum over (userId) == User.bonusMinutes
+  /// at any point in time (when only this ledger writes the column).
+  delta        Int
+  /// Discriminator drives the row's icon + label in the UI:
+  ///   "admin_grant"       — admin added minutes
+  ///   "admin_deduct"      — admin removed minutes
+  ///   "redemption"        — user redeemed a code
+  ///   "referral_bonus"    — auto-credited when someone signed up via the user's code
+  ///   "stripe_purchase"   — Stripe webhook one-time top-up
+  ///   "expiration"        — future: if we ever expire minutes
+  kind         String
+  /// Human-readable description shown in the user's transaction
+  /// history (e.g. "兑换码 GIFT-AB12-CD34", "管理员补偿 +60 分钟").
+  description  String
+  /// Optional structured metadata for joining back (codeId, adminId,
+  /// stripeSessionId, etc.).
+  metadata     Json?
+  /// Snapshot of User.bonusMinutes after this transaction was
+  /// applied. Pre-computed for cheap pagination ("show last 30
+  /// transactions with running balance" without re-summing).
+  balanceAfter Int
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
 }

@@ -18,6 +18,7 @@ import {
   Sun,
   LogOut,
   Gift,
+  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -41,6 +42,9 @@ export interface SidebarNavProps {
   /** Called when a nav link is clicked. Drawer wrapper uses this to close
    *  itself after navigation. */
   onNavigate?: () => void;
+  /** Show the /admin entry. Set by the (app) layout based on
+   *  isCurrentUserAdmin(). Non-admins never see the link at all. */
+  isAdmin?: boolean;
 }
 
 interface NavEntry {
@@ -53,6 +57,8 @@ interface NavEntry {
   action?: "settings";
   /** Marks the entry whose row is rendered via SidebarChatHistory. */
   feature?: "chat-history";
+  /** Only render when SidebarNavProps.isAdmin === true. */
+  adminOnly?: boolean;
 }
 
 const NAV_ENTRIES: NavEntry[] = [
@@ -70,6 +76,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { href: "/dashboard/polls", label: "投票", icon: Vote, kind: "link" },
   { href: "/dashboard/invites", label: "邀请", icon: Gift, kind: "link" },
   { href: "/dashboard/billing", label: "套餐", icon: Sparkles, kind: "link" },
+  { href: "/admin", label: "管理后台", icon: ShieldCheck, kind: "link", adminOnly: true },
   { label: "设置", icon: Settings, kind: "button", action: "settings" },
 ];
 
@@ -140,6 +147,7 @@ export function SidebarNav({
   className,
   inDrawer,
   onNavigate,
+  isAdmin,
 }: SidebarNavProps) {
   const pathname = usePathname() ?? "/";
   const initial = (userInitial ?? userName.charAt(0) ?? "U").toUpperCase();
@@ -244,7 +252,7 @@ export function SidebarNav({
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-2 py-3">
         <ul className="flex flex-col gap-0.5">
-          {NAV_ENTRIES.map((entry) => {
+          {NAV_ENTRIES.filter((e) => !e.adminOnly || isAdmin).map((entry) => {
             const Icon = entry.icon;
             const isLink = entry.kind !== "button" && entry.href;
             const active = isLink && entry.href ? isActive(pathname, entry.href) : false;

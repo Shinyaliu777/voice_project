@@ -11,6 +11,7 @@ import { OnboardingTour } from "@/components/OnboardingTour";
 import { AnalyticsBoot } from "@/components/AnalyticsBoot";
 import { TranscriptionAppProvider } from "@/lib/audio/transcription-app-provider";
 import { getDevUser } from "@/lib/dev-user";
+import { isCurrentUserAdmin } from "@/lib/admin";
 
 // The entire authenticated shell depends on per-user DB data (current user,
 // sessions, folders, ...). Forcing dynamic rendering keeps Next from trying
@@ -22,6 +23,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await getDevUser();
   const userName = user.name ?? "Dev User";
   const userInitial = (user.name ?? "D").trim().charAt(0).toUpperCase();
+  // Admin link visibility — check at render so toggling User.isAdmin
+  // takes effect on next navigation without a logout.
+  const { isAdmin } = await isCurrentUserAdmin();
 
   // Previously this layout ran an extra `prisma.session.findFirst()` to
   // hydrate Recorder with the most-recent unfinished session's language
@@ -42,11 +46,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <SidebarNav
         userName={userName}
         userInitial={userInitial}
+        isAdmin={isAdmin}
         className="hidden lg:flex"
       />
       <main className="flex flex-1 min-w-0 flex-col">
         <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-zinc-200 bg-white/80 px-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80 sm:gap-3 sm:px-4">
-          <MobileSidebar userName={userName} userInitial={userInitial} />
+          <MobileSidebar userName={userName} userInitial={userInitial} isAdmin={isAdmin} />
           <Link
             href="/dashboard"
             className="text-[15px] font-bold tracking-tight text-zinc-900 hover:opacity-80 dark:text-zinc-50 sm:text-[16px]"

@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 interface MobileSidebarProps {
   userName: string;
   userInitial: string;
+  isAdmin?: boolean;
 }
 
 /**
@@ -24,7 +25,7 @@ interface MobileSidebarProps {
  * abstraction yet and DialogContent is centered-modal by default; the
  * styling override here is small enough to inline.
  */
-export function MobileSidebar({ userName, userInitial }: MobileSidebarProps) {
+export function MobileSidebar({ userName, userInitial, isAdmin }: MobileSidebarProps) {
   const [open, setOpen] = React.useState(false);
 
   return (
@@ -75,6 +76,7 @@ export function MobileSidebar({ userName, userInitial }: MobileSidebarProps) {
           <SidebarNav
             userName={userName}
             userInitial={userInitial}
+            isAdmin={isAdmin}
             inDrawer
             onNavigate={() => setOpen(false)}
           />

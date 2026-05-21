@@ -53,16 +53,23 @@ async function resolvePlanForUser(userId: string) {
 }
 
 /**
- * The user's effective monthly recording cap = Plan.monthlyMinutes +
- * any referralBonusMinutes earned by bringing in new signups. The
- * bonus persists across months — once earned, never decays.
+ * Persistent extra minutes added on top of Plan.monthlyMinutes. Two
+ * separate buckets, both never decay:
+ *
+ *   - referralBonusMinutes: earned by bringing in new signups
+ *   - bonusMinutes: from admin grants + redemption code top-ups
+ *
+ * We sum them here because the cap calculation doesn't care where
+ * the bonus came from — only the user's transaction history (driven
+ * by MinuteTransaction.kind) does.
  */
-async function getReferralBonusMinutes(userId: string): Promise<number> {
+async function getBonusMinutes(userId: string): Promise<number> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { referralBonusMinutes: true },
+    select: { referralBonusMinutes: true, bonusMinutes: true },
   });
-  return user?.referralBonusMinutes ?? 0;
+  if (!user) return 0;
+  return (user.referralBonusMinutes ?? 0) + (user.bonusMinutes ?? 0);
 }
 
 /**
@@ -158,10 +165,10 @@ export async function getQuota(
   if (kind === "recording") {
     const [used, bonus] = await Promise.all([
       getRecordingMinutesUsedThisMonth(userId),
-      getReferralBonusMinutes(userId),
+      getBonusMinutes(userId),
     ]);
-    // Effective cap = plan's monthly minutes + cumulative referral bonus
-    // (which persists across months, so we add it whole, not pro-rated).
+    // Effective cap = plan's monthly minutes + cumulative bonus minutes
+    // (referral rewards + admin grants + redemption codes, all persistent).
     const baseLimit = plan.monthlyMinutes;
     const limit = baseLimit + bonus;
     const unlimited = baseLimit >= RECORDING_UNLIMITED_THRESHOLD;

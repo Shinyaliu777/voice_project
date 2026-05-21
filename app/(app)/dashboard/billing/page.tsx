@@ -3,6 +3,8 @@ import { ArrowLeft, Check, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { RedeemCodeCard } from "@/components/RedeemCodeCard";
+import { TransactionHistory } from "@/components/TransactionHistory";
 import { prisma } from "@/lib/db";
 import { requireUserId } from "@/lib/dev-user";
 import { getQuota, getRecordingBreakdown } from "@/lib/quota";
@@ -61,7 +63,7 @@ function fmtChat(n: number): string {
 export default async function BillingPage() {
   const userId = await requireUserId();
 
-  const [plans, sub, recording, chat, breakdown] = await Promise.all([
+  const [plans, sub, recording, chat, breakdown, balances] = await Promise.all([
     prisma.plan.findMany({
       where: { isActive: true },
       orderBy: [{ monthlyPriceCents: "asc" }, { name: "asc" }],
@@ -73,7 +75,13 @@ export default async function BillingPage() {
     getQuota(userId, "recording"),
     getQuota(userId, "chat"),
     getRecordingBreakdown(userId),
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { bonusMinutes: true, referralBonusMinutes: true },
+    }),
   ]);
+  const bonusMinutes = balances?.bonusMinutes ?? 0;
+  const referralBonus = balances?.referralBonusMinutes ?? 0;
 
   const currentPlanId =
     sub?.planId ?? plans.find((p) => p.isDefault)?.id ?? plans[0]?.id;
@@ -100,7 +108,7 @@ export default async function BillingPage() {
       </header>
 
       {/* Current usage */}
-      <Card className="mb-8">
+      <Card className="mb-6">
         <CardHeader>
           <CardTitle className="text-base">本期用量</CardTitle>
         </CardHeader>
@@ -122,7 +130,29 @@ export default async function BillingPage() {
             resetIn={resetInForChat()}
           />
         </CardContent>
+        {(bonusMinutes > 0 || referralBonus > 0) && (
+          <CardContent className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-300">
+                额外可用分钟（每月在套餐之外叠加）
+              </span>
+              <span className="font-mono tabular-nums text-zinc-900 dark:text-zinc-50">
+                +{(bonusMinutes + referralBonus).toLocaleString()} 分钟
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-zinc-400">
+              来自兑换码 / 管理员补偿 {bonusMinutes} 分钟 · 推荐奖励 {referralBonus} 分钟
+            </div>
+          </CardContent>
+        )}
       </Card>
+
+      {/* Redemption + history — split into two columns on wider viewports
+          so the page doesn't grow tall scroll on desktop. */}
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <RedeemCodeCard />
+        <TransactionHistory />
+      </div>
 
       {/* Audit table — exposes the per-session math behind the bar so
           users can verify "本月录音" themselves. Native <details> so

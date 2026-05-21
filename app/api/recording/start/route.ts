@@ -2,7 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
-import { getDevUserId, UnauthenticatedError } from "@/lib/dev-user";
+import {
+  requireActiveUserId,
+  UnauthenticatedError,
+  UserSuspendedError,
+} from "@/lib/dev-user";
 
 export const dynamic = "force-dynamic";
 
@@ -64,10 +68,16 @@ const startBodySchema = z.object({
 export async function POST(req: NextRequest) {
   let userId: string;
   try {
-    userId = await getDevUserId();
+    userId = await requireActiveUserId();
   } catch (e) {
     if (e instanceof UnauthenticatedError) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (e instanceof UserSuspendedError) {
+      return NextResponse.json(
+        { error: "Account suspended" },
+        { status: 403 }
+      );
     }
     throw e;
   }
