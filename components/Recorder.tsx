@@ -6,6 +6,8 @@ import {
   ArrowDown,
   ArrowDownUp,
   ArrowLeftRight,
+  Check,
+  Inbox,
   Loader2,
   Mic,
   MoreHorizontal,
@@ -42,7 +44,6 @@ import { cn } from "@/lib/utils";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { AudioSourcePicker } from "@/components/AudioSourcePicker";
 import { TranslationModePicker } from "@/components/TranslationModePicker";
-import { RecorderFolderPicker } from "@/components/RecorderFolderPicker";
 import { LocalTranslatorDialog } from "@/components/LocalTranslatorDialog";
 import { ResumeRecordingBanner } from "@/components/ResumeRecordingBanner";
 import { BookmarkInRecording } from "@/components/BookmarkInRecording";
@@ -232,9 +233,18 @@ export function Recorder({
   const [translationMode, setTranslationMode] = React.useState<TranslationMode>("local");
   const [localSetupOpen, setLocalSetupOpen] = React.useState(false);
   // Which folder the next recording goes into. null = root ("未归档").
-  // RecorderFolderPicker rehydrates the last choice from localStorage
-  // on mount, so the user doesn't re-pick every recording.
+  // Rehydrated from localStorage on mount + carried as the dialog's
+  // pre-selected option (matches lecsync's `W` state — sticky across
+  // recordings within one session).
   const [selectedFolderId, setSelectedFolderId] = React.useState<string | null>(null);
+  // Folders available for the picker dialog. Fetched once when the
+  // Recorder enters its idle state.
+  const [availableFolders, setAvailableFolders] = React.useState<
+    Array<{ id: string; name: string; color: string | null }>
+  >([]);
+  // Folder picker dialog open state. Opens on mic-button click
+  // (lecsync's `al → K(true)`), closes on pick / cancel.
+  const [folderPickerOpen, setFolderPickerOpen] = React.useState(false);
 
   // Intercept "local" picks: probe Chrome's Translator API first. If the
   // language pair is ready, switch immediately. If the model is downloadable
@@ -352,6 +362,43 @@ export function Recorder({
     };
   }, []);
 
+  // Fetch the user's folders so the mic-click dialog can list them.
+  // Also rehydrate the last-used folder from localStorage so it's
+  // pre-selected (matches lecsync's "sticky W" state across multiple
+  // recordings in one session). Only fetches in idle — once recording
+  // starts we don't need the list anymore.
+  React.useEffect(() => {
+    if (state.status !== "idle") return;
+    let cancelled = false;
+    (async () => {
+      let items: Array<{ id: string; name: string; color: string | null }> = [];
+      try {
+        const resp = await fetch("/api/folders");
+        if (!resp.ok || cancelled) return;
+        const data = (await resp.json()) as { items?: typeof items };
+        if (cancelled) return;
+        items = data.items ?? [];
+        setAvailableFolders(items);
+      } catch {
+        /* ignore — picker just shows "无文件夹" */
+      }
+      // Rehydrate last pick now that the list is in hand (we validate
+      // the saved id is still a real folder before pre-selecting).
+      if (typeof window === "undefined" || cancelled) return;
+      try {
+        const last = window.localStorage.getItem("voice-project:lastFolderId");
+        if (last && items.some((f) => f.id === last)) {
+          setSelectedFolderId(last);
+        }
+      } catch {
+        /* corrupt cache — fall back to null */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.status]);
+
   const handleEvent = React.useCallback((event: RecorderEvent) => {
     if (event.state) dispatch({ type: "state", value: event.state });
     if (typeof event.level === "number") dispatch({ type: "level", value: event.level });
@@ -399,7 +446,14 @@ export function Recorder({
   }, []);
 
   const startRecording = React.useCallback(async (
-    resume?: { sessionId: string; offsetMs: number }
+    opts: {
+      resume?: { sessionId: string; offsetMs: number };
+      /** Skip the in-state `selectedFolderId` and use this explicit
+       *  choice. Set by the folder-picker dialog so we don't race a
+       *  setState that hasn't batched yet. Pass `null` to mean
+       *  "definitely unfiled". Omit to fall back to selectedFolderId. */
+      folderIdOverride?: string | null;
+    } = {}
   ) => {
     if (starting || state.status === "recording") return;
     setStarting(true);
@@ -408,7 +462,12 @@ export function Recorder({
     setMinutesStatus("idle");
     try {
       let session: SessionDTO;
+      const resume = opts.resume;
       const resumeSessionId = resume?.sessionId;
+      const folderForBody =
+        opts.folderIdOverride === undefined
+          ? selectedFolderId
+          : opts.folderIdOverride;
       if (resumeSessionId) {
         // Resume an existing in-progress session — reuse its id so new
         // chunks and segments append to the prior content. Server-side
@@ -508,8 +567,11 @@ export function Recorder({
             title,
             sourceLang,
             targetLang,
-            // null = root ("未归档"); chosen via RecorderFolderPicker.
-            folderId: selectedFolderId,
+            // null = root ("未归档"); chosen via the folder dialog on
+            // mic-button click (or carried over from a prior session
+            // via selectedFolderId when the user re-records without
+            // changing folder).
+            folderId: folderForBody,
           }),
         });
         if (!sessionResp.ok)
@@ -1012,8 +1074,10 @@ export function Recorder({
         <ResumeRecordingBanner
           onResume={(session) => {
             void startRecording({
-              sessionId: session.id,
-              offsetMs: session.lastChunkEndMs,
+              resume: {
+                sessionId: session.id,
+                offsetMs: session.lastChunkEndMs,
+              },
             });
           }}
         />
@@ -1043,17 +1107,23 @@ export function Recorder({
             value={translationMode}
             onChange={handleTranslationModeChange}
           />
-          <RecorderFolderPicker
-            value={selectedFolderId}
-            onChange={setSelectedFolderId}
-          />
         </div>
 
         {/* Hero mic button */}
         <div className="mt-16 flex flex-col items-center gap-5 sm:mt-24 sm:gap-6">
           <button
             type="button"
-            onClick={() => void startRecording()}
+            onClick={() => {
+              // No folders → start straight away (no point asking).
+              if (availableFolders.length === 0) {
+                void startRecording();
+                return;
+              }
+              // Has folders → ask first (matches lecsync's
+              // mic-click → folder-dialog flow). The dialog's
+              // handlers call startRecording({ folderIdOverride }).
+              setFolderPickerOpen(true);
+            }}
             disabled={starting}
             aria-label="开始录制"
             className="bg-mic-gradient ring-mic-halo relative flex h-24 w-24 items-center justify-center rounded-full text-white transition-transform hover:scale-[1.03] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70 sm:h-28 sm:w-28 lg:h-32 lg:w-32"
@@ -1085,6 +1155,96 @@ export function Recorder({
           onReady={() => setTranslationMode("local")}
           onCancel={() => setTranslationMode("cloud")}
         />
+
+        {/* Folder picker — opens on mic-button click when the user has
+            any folders. Picking calls startRecording with an explicit
+            folderId override so the choice can't race a state update. */}
+        <Dialog open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>这次录音放到哪里？</DialogTitle>
+              <DialogDescription>
+                选一个文件夹，或者「不归档」直接开始。下次点开始时会记住这次的选择。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[55vh] overflow-y-auto py-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedFolderId(null);
+                  try {
+                    window.localStorage.removeItem(
+                      "voice-project:lastFolderId"
+                    );
+                  } catch {
+                    /* ignore */
+                  }
+                  setFolderPickerOpen(false);
+                  void startRecording({ folderIdOverride: null });
+                }}
+                disabled={starting}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800",
+                  selectedFolderId === null &&
+                    "bg-zinc-50 dark:bg-zinc-800/60"
+                )}
+              >
+                <Inbox className="h-4 w-4 text-zinc-500" />
+                <span className="flex-1 text-zinc-900 dark:text-zinc-100">
+                  不归档（直接开始）
+                </span>
+                {selectedFolderId === null ? (
+                  <Check className="h-4 w-4 text-zinc-500" />
+                ) : null}
+              </button>
+              {availableFolders.map((folder) => (
+                <button
+                  key={folder.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedFolderId(folder.id);
+                    try {
+                      window.localStorage.setItem(
+                        "voice-project:lastFolderId",
+                        folder.id
+                      );
+                    } catch {
+                      /* ignore */
+                    }
+                    setFolderPickerOpen(false);
+                    void startRecording({ folderIdOverride: folder.id });
+                  }}
+                  disabled={starting}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800",
+                    selectedFolderId === folder.id &&
+                      "bg-zinc-50 dark:bg-zinc-800/60"
+                  )}
+                >
+                  <span
+                    className="inline-block h-3 w-3 shrink-0 rounded-full"
+                    style={{ backgroundColor: folder.color ?? "#a1a1aa" }}
+                  />
+                  <span className="flex-1 truncate text-zinc-900 dark:text-zinc-100">
+                    {folder.name}
+                  </span>
+                  {selectedFolderId === folder.id ? (
+                    <Check className="h-4 w-4 text-zinc-500" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="ghost"
+                onClick={() => setFolderPickerOpen(false)}
+                disabled={starting}
+              >
+                取消
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }
