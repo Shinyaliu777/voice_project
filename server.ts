@@ -23,9 +23,18 @@ import next from "next";
 import { attachLiveShareWs } from "./lib/live-share/ws-server";
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = process.env.HOSTNAME || "0.0.0.0";
+// IMPORTANT: do NOT read $HOSTNAME — on Linux the kernel/shell sets it
+// automatically to the machine's hostname (e.g. "contabo-centos"), and
+// Node's net.listen() would then try to bind to whatever that name
+// resolves to. That's typically either nothing (DNS miss) or 127.0.0.1
+// (if /etc/hosts maps it), so nginx → 127.0.0.1:3000 might work by
+// accident on one box and fail on the next. Always bind to 0.0.0.0
+// (all interfaces) unless the operator explicitly overrides with HOST.
+const hostname = process.env.HOST || "0.0.0.0";
 const port = Number(process.env.PORT || 3000);
 
+// We pass the bound interface to next() too. Next only uses this for
+// printing URLs and computing self-origins; it doesn't bind here.
 const nextApp = next({ dev, hostname, port });
 const handle = nextApp.getRequestHandler();
 
