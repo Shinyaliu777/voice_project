@@ -305,9 +305,10 @@ npm ci
 npx prisma migrate deploy        # ← 必须，新增 3 张表 + User 3 列
 npx prisma generate
 
-# 关键：把你（运维）的邮箱填进去，否则没人能进 /admin
-# 多个 admin 用逗号分隔
-echo 'ADMIN_EMAILS="ops@example.com,boss@example.com"' >> .env
+# 项目所有者邮箱已经硬编码进 lib/admin.ts，部署完用所有者邮箱
+# 登入 voice.cyanclay.org 就直接是 admin，不需要再设 env。
+# 如果要给运维/其他人也开 admin，就追加 ADMIN_EMAILS：
+# echo 'ADMIN_EMAILS="ops@example.com,partner@example.com"' >> .env
 
 npm run build
 # 平滑重启（pm2 reload / systemctl restart / docker compose up -d）
