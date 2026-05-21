@@ -104,6 +104,22 @@ ALLOW_DEV_USER_FALLBACK=""                 # 留空；设 "1" 会让未登录请
 # ============ Server ============
 PORT=3000
 NODE_ENV="production"
+
+# ============ 观测埋点（PostHog 自托管，可选）============
+# 部署 PostHog 后填这两个，事件即开始上报；留空全 no-op。
+# 详细部署指南：docs/posthog-deployment.md
+NEXT_PUBLIC_POSTHOG_KEY=""
+NEXT_PUBLIC_POSTHOG_HOST=""
+
+# ============ Soniox 行为微调 ============
+# 严格语种过滤：默认 ON（"1"）。code-switching 用户（中英混说）建议关掉：
+# NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT="0"
+NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT="1"
+
+# ============ 推荐奖励（可选）============
+# 每个新用户用你的邀请码注册成功 → 推荐人 +N 分钟月度录音额度。
+# 默认 60 分钟；改成 "0" 关闭奖励但仍记录归属。
+REFERRAL_BONUS_MINUTES="60"
 ```
 
 > 关于 `AUTH_URL` / `trustHost`：Auth.js v5 默认要求请求里的 Host header
@@ -197,16 +213,48 @@ npm run build
 npm run start
 ```
 
-后续升级：
+### 后续升级
+
+**标准流程（绝大多数 commit）：**
 
 ```bash
+cd /opt/voice_project   # 或你的部署目录
 git pull
-npm ci
-npx prisma generate
-npx prisma db push       # 如果 schema 变了
-npm run build
-# 平滑重启进程（pm2 reload / systemd restart / docker compose up -d）
+npm ci                  # 严格按 lock 文件装，不要用 npm install
+npx prisma generate     # Prisma Client 同步 schema 类型
+npm run build           # 跑 Next.js 生产 build（含 typecheck）
+# 平滑重启（任选其一）：
+#   pm2 reload voice-project
+#   systemctl restart voice-project
+#   docker compose up -d --no-deps voice-project
 ```
+
+**有 schema 变化时**（看 `git diff HEAD@{1} -- prisma/schema.prisma`）：
+
+```bash
+# 标准路径 — staging / 测试 / 新部署：
+npx prisma migrate deploy   # 跑所有未应用的 migrations/*
+
+# 生产 + 历史数据库有 drift 的情况（如本项目早期混用了 db push）：
+# 用 db execute 单独 apply + 手动 mark applied，避免 reset 数据
+npx prisma db execute --file prisma/migrations/<NEW_MIGRATION>/migration.sql --schema prisma/schema.prisma
+npx prisma migrate resolve --applied <NEW_MIGRATION_DIRNAME>
+```
+
+**有新增 env 变量时**：先 `git log -p ENV.md DEPLOY.md` 看新行，append 到 `.env` 再 build。今天（2026-05-21）新增 4 个，全部可选不填则禁用功能：
+- `NEXT_PUBLIC_POSTHOG_KEY` + `NEXT_PUBLIC_POSTHOG_HOST` — 埋点
+- `NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT` — Soniox 严格模式（默认 1，关闭设 "0"）
+- `REFERRAL_BONUS_MINUTES` — 推荐奖励分钟数（默认 60）
+
+**HMR / dev 服务不会自动看见新 schema/env**：改完一定要 `npm run build` 重新启动进程；只重 reload 不够。
+
+**升级前必看的位置**：
+
+- `docs/CHANGELOG-*.md` — 每天大变更的归档。今天的是 `docs/CHANGELOG-2026-05-21.md`。
+- `prisma/migrations/<latest>/migration.sql` — 看新 migration 是否会动现有数据
+- `git log -p --since="last deploy"` -- `.env*` `DEPLOY.md` README.md
+
+**回滚**：`git reset --hard <prev_commit>` + `npx prisma migrate resolve --rolled-back <migration_dir>`（如果 schema 没真的有破坏性改动，schema 不回滚也常能跑）+ rebuild。
 
 ---
 
