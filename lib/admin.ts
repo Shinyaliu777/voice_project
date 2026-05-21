@@ -1,35 +1,22 @@
 /**
  * Admin auth helpers.
  *
- * A user is treated as an admin if ANY of these is true:
- *   1. Their email is in `OWNER_EMAILS` below (hardcoded — project owner,
- *      can't be turned off via env, survives any deploy misconfig)
- *   2. Their email is in the `ADMIN_EMAILS` env var (comma-separated,
- *      case-insensitive). For ops to add more admins without a code change.
- *   3. `User.isAdmin = true` in the database (toggleable via /admin UI
- *      once someone is already an admin)
+ * A user is treated as an admin if EITHER of these is true:
+ *   1. Their email is in the `ADMIN_EMAILS` env var (comma-separated,
+ *      case-insensitive). The default value is committed to
+ *      `.env.production` (project owner) so a fresh deploy doesn't need
+ *      raw SQL or manual env setup; ops can add more emails to that
+ *      file or via `.env.production.local`.
+ *   2. `User.isAdmin = true` in the database (toggleable via /admin UI
+ *      once someone is already an admin).
  *
- * The env + hardcode paths are checked at READ time on every request,
- * so adding/removing emails takes effect on the next request without a
- * restart (for env) or a redeploy (for hardcode requires it though).
+ * Both paths are checked at READ time on every request, so changes
+ * (add to env file + rebuild, or flip the DB column) take effect on
+ * the next request without code changes.
  */
 
 import { auth } from "@/auth";
 import { prisma } from "./db";
-
-/**
- * Project owner emails — always treated as admin, regardless of DB or
- * env state. Hardcoded so a fresh deploy on an empty DB doesn't lock
- * the owner out, and so an ops mistake clearing $ADMIN_EMAILS doesn't
- * accidentally demote them. Lowercased + dash-stripped at compare time.
- *
- * Adding a new permanent owner: append below and redeploy. Day-to-day
- * admin grants should go through the /admin UI (DB column) or
- * ADMIN_EMAILS env var instead.
- */
-const OWNER_EMAILS = new Set<string>([
-  "shinyaliu777@gmail.com",
-]);
 
 /**
  * Lowercased, deduped set of emails from ADMIN_EMAILS env. Recomputed
@@ -60,15 +47,8 @@ export async function isCurrentUserAdmin(): Promise<{
     return { isAdmin: false, userId, email };
   }
 
-  const emailLower = email.toLowerCase();
-
-  // Owner path — hardcoded, survives any deploy misconfig.
-  if (OWNER_EMAILS.has(emailLower)) {
-    return { isAdmin: true, userId, email };
-  }
-
   // Env path — fast, no DB hit needed.
-  if (envAdminEmails().has(emailLower)) {
+  if (envAdminEmails().has(email.toLowerCase())) {
     return { isAdmin: true, userId, email };
   }
 
