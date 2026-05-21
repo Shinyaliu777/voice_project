@@ -104,11 +104,41 @@ SUM(MinuteTransaction.delta) WHERE userId = U   ==   User.bonusMinutes
 | Commit | 内容 |
 |---|---|
 | `3f01fcc` | `.env.example` + `.env.production.example` 加 `ADMIN_EMAILS` 段 |
-| 本提交 | `DEPLOY.md` 加 2026-05-22 升级要点段 + sanity-check 命令 + 回滚 SQL |
+| `b1fbc65` | `DEPLOY.md` 加 2026-05-22 升级要点段 + sanity-check 命令 + 回滚 SQL |
 
 ---
 
-## 7. 待办（明天起步）
+## 7. Owner email 安置（晚间小折腾）
+
+凌晨试了两版才落地，记一下决策过程：
+
+| Commit | 方案 | 状态 |
+|---|---|---|
+| `df141cb` | 在 `lib/admin.ts` 硬编码 `OWNER_EMAILS = ["shinyaliu777@gmail.com"]` | 撤回 |
+| `596663f` | 新建**提交到 git 的** `.env.production` 文件，里面写死 `ADMIN_EMAILS="shinyaliu777@gmail.com"` | **采用** |
+
+**为什么撤回硬编码**：邮箱出现在源码里，一旦仓库开源 / 卖项目 / 拉合作者就跟着走。配置该归配置，不该混代码。
+
+**最终设计 — Next.js 标准 env 分层**：
+
+```
+.env.production.local   ← gitignored，运维放秘密（AUTH_SECRET / API keys / DB pwd）
+.env.production         ← 提交到 git，非敏感公开默认（ADMIN_EMAILS 在这）
+.env                    ← gitignored，本地 dev 用
+```
+
+`.local` 优先级最高，覆盖 `.env.production`。所以：
+- **所有者**邮箱跟着 `git pull` 自动上 prod，运维零额外动作
+- **加新 admin** 不动 git：运维写 `.env.production.local` 覆盖即可
+- **秘密**永远不进 git
+
+`lib/admin.ts` 现在只看 `ADMIN_EMAILS` env + `User.isAdmin` DB 列两条路径，没有硬编码 fallback。
+
+`DEPLOY.md §6` 的 2026-05-22 升级段也同步成新模型，不再让运维 `echo ADMIN_EMAILS >> .env`。
+
+---
+
+## 8. 待办（明天起步）
 
 - **Stripe 真支付**：lecsync 那个 dialog 的「立即订阅」+「时长叠加包」按钮还是 placeholder。Wave 2.2。
 - **用户详情页 `/admin/users/[id]`**：API 已写完，UI 暂时跳过；目前点用户没详情页，只能在表格里操作。
