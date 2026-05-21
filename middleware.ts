@@ -24,8 +24,11 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
-  // Anything under /dashboard requires a session.
-  if (pathname.startsWith("/dashboard")) {
+  // Anything under /dashboard or /admin requires a session. (/admin
+  // also runs an isAdmin check inside its server layout — middleware
+  // just makes sure we don't trip the (app) layout's getDevUser()
+  // throw for unauthenticated callers, which 500s.)
+  if (pathname.startsWith("/dashboard") || pathname.startsWith("/admin")) {
     if (!isLoggedIn) {
       const loginUrl = new URL("/login", req.url);
       loginUrl.searchParams.set("callbackUrl", pathname + req.nextUrl.search);
