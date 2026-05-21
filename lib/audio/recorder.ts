@@ -149,6 +149,20 @@ export class Recorder {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly WS_RECONNECT_BACKOFFS_MS = [500, 1500, 3000];
 
+  // ---- live-share WebSocket ----
+  // When a viewer joins via /share/live/<token>, host opens a WS to push
+  // utterance/segment frames in realtime. Server fans them out to all
+  // viewers connected on the same token. WS is best-effort — if it
+  // can't connect or drops, pushLiveShare() silently falls back to the
+  // existing HTTP POST path so transcripts still reach viewers via the
+  // store-and-poll route. Same backoff schedule as the Soniox WS.
+  private liveShareWs: WebSocket | null = null;
+  private liveShareWsState: "closed" | "connecting" | "open" | "failed" =
+    "closed";
+  private liveShareWsReconnectAttempts = 0;
+  private liveShareWsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly LIVE_SHARE_WS_RECONNECT_BACKOFFS_MS = [500, 1500, 3000];
+
   // ---- cloud translation lag bridge ----
   // Soniox's two_way translation tokens for a sentence routinely arrive
   // AFTER the source <end> token closes that sentence — sometimes by
@@ -405,10 +419,22 @@ export class Recorder {
    * channel so remote viewers see the same transcript.
    */
   setLiveShareToken(token: string | null | undefined): void {
+    const prev = this.config.liveShareToken;
+    const next = token ?? undefined;
     this.config = {
       ...this.config,
-      liveShareToken: token ?? undefined,
+      liveShareToken: next,
     };
+    if (prev === next) return;
+    // Tear down any existing WS — either token changed or token cleared.
+    this.closeLiveShareWs();
+    if (next) {
+      // Open optimistically — push paths fall back to POST until it
+      // resolves. Skip in non-browser environments (SSR safety).
+      if (typeof window !== "undefined" && typeof WebSocket !== "undefined") {
+        this.openLiveShareWs();
+      }
+    }
   }
 
   destroy(): void {
@@ -419,6 +445,7 @@ export class Recorder {
       clearTimeout(this.wsReconnectTimer);
       this.wsReconnectTimer = null;
     }
+    this.closeLiveShareWs();
     this.detachDeviceMonitor();
     this.detachVisibilityMonitor();
     this.detachPageHideMonitor();
@@ -1527,6 +1554,22 @@ export class Recorder {
   private pushLiveShare(payload: object): void {
     const token = this.config.liveShareToken;
     if (!token) return;
+    // Fast path: WS is open, send the payload directly. Server broadcasts
+    // to all viewers connected on this token. The exact same JSON shape
+    // we'd otherwise POST goes on the wire.
+    if (
+      this.liveShareWs &&
+      this.liveShareWsState === "open" &&
+      this.liveShareWs.readyState === WebSocket.OPEN
+    ) {
+      try {
+        this.liveShareWs.send(JSON.stringify(payload));
+        return;
+      } catch {
+        // send() can throw if the socket closed between the readyState
+        // check and the send call. Fall through to POST below.
+      }
+    }
     const url = `/api/live-share/${encodeURIComponent(token)}/push`;
     const body = JSON.stringify(payload);
     const attempt = async (retriesLeft: number): Promise<void> => {
@@ -1556,6 +1599,128 @@ export class Recorder {
       }
     };
     void attempt(1);
+  }
+
+  /**
+   * Open the host-side live-share WS. Best-effort: any failure (no server,
+   * 404, network drop) leaves state="failed" and pushLiveShare() silently
+   * uses HTTP POST instead. Reconnects with the same backoff schedule as
+   * the Soniox WS so a transient blip doesn't fall through to POST for
+   * the rest of the session. Stops trying on intentional shutdown.
+   */
+  private openLiveShareWs(): void {
+    if (typeof window === "undefined" || typeof WebSocket === "undefined") {
+      return;
+    }
+    const token = this.config.liveShareToken;
+    if (!token) return;
+    if (
+      this.liveShareWsState === "connecting" ||
+      this.liveShareWsState === "open"
+    ) {
+      return;
+    }
+    if (this.intentionalShutdown) return;
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${window.location.host}/ws/live/${encodeURIComponent(
+      token
+    )}?role=host`;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      // Constructor throwing is rare (malformed URL only) — treat as
+      // permanent failure for this token; POST fallback kicks in.
+      this.liveShareWsState = "failed";
+      return;
+    }
+    this.liveShareWs = ws;
+    this.liveShareWsState = "connecting";
+
+    ws.onopen = () => {
+      // Guard against a stale ws firing after token rotated.
+      if (this.liveShareWs !== ws) return;
+      this.liveShareWsState = "open";
+      this.liveShareWsReconnectAttempts = 0;
+    };
+
+    // Server doesn't push anything back to host today, but bind a no-op
+    // listener so the browser doesn't buffer messages forever if that
+    // changes server-side.
+    ws.onmessage = () => {
+      /* host doesn't consume server messages */
+    };
+
+    const handleDisconnect = () => {
+      if (this.liveShareWs !== ws) return;
+      // If we were "open" before, the socket dropped mid-session — count
+      // this as the first failure and try to come back. If we never
+      // reached "open", openLiveShareWs's onerror path handles it.
+      this.liveShareWs = null;
+      this.liveShareWsState = "failed";
+      if (this.intentionalShutdown) return;
+      if (!this.config.liveShareToken) return;
+      // Only reconnect while recording — paused is OK (still want push),
+      // but ended/stopped should let the socket stay closed.
+      if (
+        this.state !== "recording" &&
+        this.state !== "paused" &&
+        this.state !== "connected"
+      ) {
+        return;
+      }
+      this.scheduleLiveShareWsReconnect();
+    };
+
+    ws.onerror = handleDisconnect;
+    ws.onclose = handleDisconnect;
+  }
+
+  private scheduleLiveShareWsReconnect(): void {
+    if (this.intentionalShutdown) return;
+    if (this.liveShareWsReconnectTimer) return;
+    const attempt = this.liveShareWsReconnectAttempts;
+    if (attempt >= this.LIVE_SHARE_WS_RECONNECT_BACKOFFS_MS.length) {
+      // Exhausted retries — leave state="failed". pushLiveShare() now
+      // walks the POST path for the rest of the session, which is the
+      // intended graceful-degradation behaviour.
+      return;
+    }
+    const delay = this.LIVE_SHARE_WS_RECONNECT_BACKOFFS_MS[attempt];
+    this.liveShareWsReconnectAttempts = attempt + 1;
+    this.liveShareWsReconnectTimer = setTimeout(() => {
+      this.liveShareWsReconnectTimer = null;
+      this.openLiveShareWs();
+    }, delay);
+  }
+
+  /** Synchronous teardown of the live-share WS. Called from setLiveShareToken
+   *  (token cleared / rotated), shutdownInternal, and destroy. */
+  private closeLiveShareWs(): void {
+    if (this.liveShareWsReconnectTimer) {
+      clearTimeout(this.liveShareWsReconnectTimer);
+      this.liveShareWsReconnectTimer = null;
+    }
+    this.liveShareWsReconnectAttempts = 0;
+    if (this.liveShareWs) {
+      // Detach handlers before close so the close handler's reconnect
+      // path doesn't fire on an intentional teardown.
+      try {
+        this.liveShareWs.onopen = null;
+        this.liveShareWs.onmessage = null;
+        this.liveShareWs.onerror = null;
+        this.liveShareWs.onclose = null;
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.liveShareWs.close();
+      } catch {
+        /* ignore */
+      }
+      this.liveShareWs = null;
+    }
+    this.liveShareWsState = "closed";
   }
 
   // ---- batched POST of finalized utterances as segments ----
@@ -2127,6 +2292,8 @@ export class Recorder {
   }
 
   private async shutdownInternal(): Promise<void> {
+    this.intentionalShutdown = true;
+    this.closeLiveShareWs();
     this.detachDeviceMonitor();
     this.detachVisibilityMonitor();
     this.detachPageHideMonitor();

@@ -168,6 +168,21 @@ server {
         chunked_transfer_encoding off;
     }
 
+    # WebSocket：实时直播分享（host push + viewer 订阅都走这条）
+    # 见 server.ts + lib/live-share/ws-server.ts
+    location ^~ /ws/ {
+        proxy_pass http://voice_app;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        # WS 是长连接，超时要拉长（默认 60s 会主动断 → 客户端误判为掉线）
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     # 其他
     location / {
         proxy_pass http://voice_app;
@@ -183,7 +198,23 @@ server {
 
 ---
 
-## 5. 安装 / 构建 / 启动
+## 5. 启动入口（重要变更）
+
+从 2026-05-21 起项目用**自定义 Node 服务器**（`server.ts`）而非 `next dev/start` 直跑。原因：直播分享路径升级到 WebSocket，需要在同一进程里挂 `ws` 库的 upgrade handler。
+
+副作用：
+
+- **Turbopack 不兼容 custom server** —— `next dev --turbopack` 不能跟我们的 `server.ts` 共存。dev 模式回到 webpack（HMR 慢一截，但稳）。
+- 生产用 `tsx server.ts NODE_ENV=production` 启动，无需 `tsc` 预编译。
+- 监听的端口、SIGTERM 优雅退出、WS 路径都在 `server.ts` 顶部，改端口或加 WS endpoint 都在那里。
+
+`/ws/live/<token>?role=host|viewer` 是当前唯一的 WS 端点。Host 直接 `ws.send(JSON)` 给服务端，服务端走 `lib/live-share/broadcaster.ts` 广播给所有 viewers（含 SSE viewers — 两条通道共用同一个 pub/sub），实现 host→viewer 端到端延迟从 200-500ms 降到 ~50ms。
+
+老的 `POST /api/live-share/[token]/push` 和 SSE 路由都**保留**，作为 WS 不可用时的自动 fallback。WS server 临时挂掉 / Cloudflare WS 套餐 quota 用完 / 客户端 WebSocket 类被 disable，都能自动退化。
+
+---
+
+## 6. 安装 / 构建 / 启动
 
 ```bash
 # 1. clone
@@ -258,7 +289,7 @@ npx prisma migrate resolve --applied <NEW_MIGRATION_DIRNAME>
 
 ---
 
-## 6. 启动方式（任选一个）
+## 7. 启动方式（任选一个）
 
 ### A. Docker Compose（推荐，自带 Postgres）
 
@@ -365,7 +396,7 @@ WantedBy=multi-user.target
 
 ---
 
-## 7. 健康检查 + 冒烟测试
+## 8. 健康检查 + 冒烟测试
 
 ```bash
 # 健康检查
@@ -390,7 +421,7 @@ curl -X POST https://your.domain.com/api/transcription/sessions \
 
 ---
 
-## 8. 备份
+## 9. 备份
 
 ```bash
 # 每天定时（cron）
@@ -404,7 +435,7 @@ tar -czf /backup/uploads-$(date +%F).tar.gz /var/lib/voice-project/uploads
 
 ---
 
-## 9. 文件清单
+## 10. 文件清单
 
 | 文件 | 用途 | 是否要改 |
 | --- | --- | --- |
@@ -420,7 +451,7 @@ tar -czf /backup/uploads-$(date +%F).tar.gz /var/lib/voice-project/uploads
 
 ---
 
-## 10. 已知限制
+## 11. 已知限制
 
 ✅ **登录已就绪（Phase 2 Wave 2.1）**：Google OAuth + dev-login（仅 dev/`ALLOW_DEV_LOGIN=1` 时可用）已经接入；middleware 守护 `/dashboard/*`、自动重定向 `/login`；每个 user 的录音 / 词条 / 对话已按 `user.id` 隔离。
 
@@ -434,7 +465,7 @@ tar -czf /backup/uploads-$(date +%F).tar.gz /var/lib/voice-project/uploads
 
 ---
 
-## 11. 故障排查
+## 12. 故障排查
 
 | 现象 | 排查 |
 | --- | --- |

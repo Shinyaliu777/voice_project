@@ -414,6 +414,11 @@ export function LiveShareViewer({
   const [connected, setConnected] = React.useState(false);
   const [lastEventAt, setLastEventAt] = React.useState<number | null>(null);
   const [now, setNow] = React.useState<number>(() => Date.now());
+  // Transport selection: try WebSocket first (lower latency, bidirectional),
+  // fall back to the existing EventSource path if WS fails. The SSE branch
+  // is the exact same code that shipped before — keeping it intact is the
+  // non-breaking guarantee.
+  const [transport, setTransport] = React.useState<"ws" | "sse">("ws");
 
   const [theme, setTheme] = React.useState<"light" | "dark">("light");
   const [fontScale, setFontScale] = React.useState<FontScalePreset>("M");
@@ -486,8 +491,166 @@ export function LiveShareViewer({
     }
   }, [fontScale]);
 
-  // -------- SSE feed --------
+  // -------- WS feed (preferred) with SSE fallback --------
+  // Route a single payload (already-parsed JSON) into the same reducer
+  // actions the SSE branch uses. Kept out of the effect so both transports
+  // dispatch through identical logic.
+  const routePayload = React.useCallback(
+    (data: {
+      type?: string;
+      session?: SessionDTO;
+      segments?: SegmentDTO[];
+      utterance?: Utterance;
+      segment?: SegmentDTO;
+      utteranceId?: string;
+    }) => {
+      switch (data.type) {
+        case "joined": {
+          if (data.session && Array.isArray(data.segments)) {
+            dispatch({
+              type: "init",
+              session: data.session,
+              segments: data.segments,
+            });
+            if (data.session.sourceLang) {
+              setEffectiveSourceLang(data.session.sourceLang);
+            }
+          }
+          break;
+        }
+        case "utterance": {
+          if (data.utterance) {
+            dispatch({ type: "utterance", value: data.utterance });
+          }
+          break;
+        }
+        case "segment": {
+          if (data.segment) {
+            dispatch({
+              type: "segment",
+              value: data.segment,
+              utteranceId: data.utteranceId,
+            });
+          }
+          break;
+        }
+        // session-status / viewerCount are WS-only sidecar messages —
+        // the UI doesn't read them yet, so we just bump activity above.
+        default:
+          break;
+      }
+    },
+    []
+  );
+
+  // -------- WebSocket branch --------
   React.useEffect(() => {
+    if (transport !== "ws") return;
+    if (typeof window === "undefined") return;
+    if (typeof WebSocket === "undefined") {
+      // Older runtime: skip straight to SSE.
+      setTransport("sse");
+      return;
+    }
+
+    let ws: WebSocket | null = null;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    // Was the socket ever observed in OPEN state? Distinguishes
+    // "never connected (→ fall back to SSE immediately)" from
+    // "was connected then dropped (→ exponential-retry then fall back)".
+    let everOpen = false;
+
+    const RETRY_DELAYS_MS = [500, 1500, 3000];
+
+    const bump = () => setLastEventAt(Date.now());
+
+    const connect = () => {
+      if (cancelled) return;
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      const url = `${proto}://${window.location.host}/ws/live/${encodeURIComponent(token)}?role=viewer`;
+      let next: WebSocket;
+      try {
+        next = new WebSocket(url);
+      } catch {
+        // Construction itself threw (bad URL, blocked by policy, etc.).
+        setTransport("sse");
+        return;
+      }
+      ws = next;
+
+      next.onopen = () => {
+        if (cancelled) return;
+        everOpen = true;
+        attempt = 0;
+        setConnected(true);
+      };
+
+      next.onmessage = (e: MessageEvent) => {
+        if (cancelled) return;
+        bump();
+        try {
+          const data = JSON.parse(e.data);
+          routePayload(data);
+        } catch {
+          /* ignore parse */
+        }
+      };
+
+      next.onerror = () => {
+        // Browsers fire onerror just before onclose for failed handshakes.
+        // We let onclose drive the actual transport flip / retry decision
+        // — it has access to whether we ever reached OPEN state. Trying
+        // to flip transport here would race with onclose's cleanup.
+      };
+
+      next.onclose = () => {
+        if (cancelled) return;
+        setConnected(false);
+        ws = null;
+        if (!everOpen) {
+          // Never connected — give up on WS, use SSE.
+          setTransport("sse");
+          return;
+        }
+        // Was connected at least once: retry with exponential backoff,
+        // then fall back to SSE if all retries fail.
+        if (attempt < RETRY_DELAYS_MS.length) {
+          const delay = RETRY_DELAYS_MS[attempt];
+          attempt += 1;
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            connect();
+          }, delay);
+        } else {
+          setTransport("sse");
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer != null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+    };
+  }, [token, transport, routePayload]);
+
+  // -------- SSE fallback feed --------
+  React.useEffect(() => {
+    if (transport !== "sse") return;
     const es = new EventSource(`/api/live-share/${encodeURIComponent(token)}`);
 
     const bump = () => setLastEventAt(Date.now());
@@ -558,7 +721,7 @@ export function LiveShareViewer({
     return () => {
       es.close();
     };
-  }, [token]);
+  }, [token, transport]);
 
   // 1Hz tick so the staleness label updates without an SSE event.
   React.useEffect(() => {

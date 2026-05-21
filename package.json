@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx server.ts",
     "build": "next build",
-    "start": "next start",
+    "start": "NODE_ENV=production tsx server.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "db:up": "docker compose up -d postgres",
@@ -54,6 +54,7 @@
     "sonner": "^1.7.0",
     "tailwind-merge": "^2.5.4",
     "tailwindcss-animate": "^1.0.7",
+    "ws": "^8.20.1",
     "zod": "^3.23.0",
     "zustand": "^5.0.13"
   },
@@ -64,6 +65,7 @@
     "@types/pdfkit": "^0.13.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.1",
     "postcss": "^8.4.49",
     "prisma": "^6.0.0",
     "tailwindcss": "^4.0.0",

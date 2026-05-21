@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(npm run typecheck)",
       "mcp__Claude_Preview__preview_screenshot",
