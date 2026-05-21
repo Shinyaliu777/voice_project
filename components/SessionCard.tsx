@@ -4,7 +4,10 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  Check,
   CheckCircle2,
+  FolderInput,
+  Inbox,
   Loader2,
   MessageSquare,
   MoreHorizontal,
@@ -136,14 +139,26 @@ function statusInfo(status: SessionDTO["status"]): StatusInfo {
   }
 }
 
-export interface SessionCardProps {
-  session: SessionDTO;
+export interface FolderChoice {
+  id: string;
+  name: string;
+  color: string | null;
 }
 
-export function SessionCard({ session }: SessionCardProps) {
+export interface SessionCardProps {
+  session: SessionDTO;
+  /** Folders the user can move this session into. Pass an empty array to
+   *  hide the "移动到文件夹" affordance entirely (e.g. on pages where you
+   *  haven't loaded folders). */
+  folders?: FolderChoice[];
+}
+
+export function SessionCard({ session, folders = [] }: SessionCardProps) {
   const router = useRouter();
   const [renameOpen, setRenameOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [moveOpen, setMoveOpen] = React.useState(false);
+  const [moving, setMoving] = React.useState(false);
   const [title, setTitle] = React.useState(session.title || "");
   const [saving, setSaving] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
@@ -153,6 +168,36 @@ export function SessionCard({ session }: SessionCardProps) {
   const openRename = () => {
     setTitle(session.title || "");
     setRenameOpen(true);
+  };
+
+  const moveToFolder = async (targetFolderId: string | null) => {
+    if (moving) return;
+    if ((session.folderId ?? null) === targetFolderId) {
+      setMoveOpen(false);
+      return;
+    }
+    setMoving(true);
+    try {
+      const resp = await fetch(
+        `/api/transcription/sessions/${session.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folderId: targetFolderId }),
+        }
+      );
+      if (!resp.ok) {
+        toast.error(`移动失败 (${resp.status})`);
+        return;
+      }
+      toast.success(targetFolderId ? "已移动" : "已移出文件夹");
+      setMoveOpen(false);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "移动失败");
+    } finally {
+      setMoving(false);
+    }
   };
 
   const saveRename = async () => {
@@ -285,12 +330,17 @@ export function SessionCard({ session }: SessionCardProps) {
               <Pencil className="h-4 w-4" />
               <span>重命名</span>
             </DropdownMenuItem>
-            {/* "移动到文件夹" lived here as a disabled placeholder.
-                The session detail page has a working folder picker —
-                rather than leave a dead row in the dropdown, drop it
-                and let users move from the detail page. If we want to
-                re-add it later, lift the folder list to this component
-                and reuse SessionFolderPicker. */}
+            {folders.length > 0 ? (
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setMoveOpen(true);
+                }}
+              >
+                <FolderInput className="h-4 w-4" />
+                <span>移动到文件夹</span>
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem
               onSelect={(e) => {
                 e.preventDefault();
@@ -372,6 +422,66 @@ export function SessionCard({ session }: SessionCardProps) {
               <span>确认删除</span>
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={moveOpen} onOpenChange={setMoveOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>移动到文件夹</DialogTitle>
+            <DialogDescription>
+              选择一个文件夹，或选择「未归档」让这段录音回到根目录。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] overflow-y-auto py-1">
+            <button
+              type="button"
+              onClick={() => void moveToFolder(null)}
+              disabled={moving}
+              className={cn(
+                "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800",
+                (session.folderId ?? null) === null &&
+                  "bg-zinc-50 dark:bg-zinc-800/60"
+              )}
+            >
+              <Inbox className="h-4 w-4 text-zinc-500" />
+              <span className="flex-1 text-zinc-900 dark:text-zinc-100">
+                未归档
+              </span>
+              {(session.folderId ?? null) === null ? (
+                <Check className="h-4 w-4 text-zinc-500" />
+              ) : null}
+            </button>
+            {folders.map((folder) => (
+              <button
+                key={folder.id}
+                type="button"
+                onClick={() => void moveToFolder(folder.id)}
+                disabled={moving}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800",
+                  session.folderId === folder.id &&
+                    "bg-zinc-50 dark:bg-zinc-800/60"
+                )}
+              >
+                <span
+                  className="inline-block h-3 w-3 shrink-0 rounded-full"
+                  style={{ backgroundColor: folder.color ?? "#a1a1aa" }}
+                />
+                <span className="flex-1 truncate text-zinc-900 dark:text-zinc-100">
+                  {folder.name}
+                </span>
+                {session.folderId === folder.id ? (
+                  <Check className="h-4 w-4 text-zinc-500" />
+                ) : null}
+              </button>
+            ))}
+          </div>
+          {moving ? (
+            <div className="flex items-center justify-center pb-3 text-xs text-zinc-500">
+              <Loader2 className="mr-2 h-3 w-3 animate-spin" /> 移动中
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </>

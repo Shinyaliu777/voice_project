@@ -4,7 +4,11 @@ import * as React from "react";
 import Link from "next/link";
 import { Sparkles } from "lucide-react";
 import type { SessionDTO } from "@/lib/contracts";
-import { SessionCard, flagFor } from "@/components/SessionCard";
+import {
+  SessionCard,
+  flagFor,
+  type FolderChoice,
+} from "@/components/SessionCard";
 import { cn } from "@/lib/utils";
 
 type BucketKey =
@@ -94,11 +98,15 @@ export interface SessionHistoryGroupedProps {
   sessions: SessionDTO[];
   /** Search query from the URL (?q=…). When non-empty, also filters by title. */
   query?: string;
+  /** Folders available to move a session into. Forwarded to each
+   *  SessionCard so the per-card dropdown can open a move dialog. */
+  folders?: FolderChoice[];
 }
 
 export function SessionHistoryGrouped({
   sessions,
   query,
+  folders = [],
 }: SessionHistoryGroupedProps) {
   const [langFilter, setLangFilter] = React.useState<string>("all");
   const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all");
@@ -237,7 +245,7 @@ export function SessionHistoryGrouped({
               </h3>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {items.map((s) => (
-                  <SessionCard key={s.id} session={s} />
+                  <SessionCard key={s.id} session={s} folders={folders} />
                 ))}
               </div>
             </section>

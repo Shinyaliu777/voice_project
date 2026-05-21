@@ -117,7 +117,15 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
         <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-500">
           所有录音
         </h2>
-        <SessionHistoryGrouped sessions={sessions} query={query} />
+        <SessionHistoryGrouped
+          sessions={sessions}
+          query={query}
+          folders={folders.map((f) => ({
+            id: f.id,
+            name: f.name,
+            color: f.color,
+          }))}
+        />
       </section>
     </div>
   );

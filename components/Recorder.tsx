@@ -42,6 +42,7 @@ import { cn } from "@/lib/utils";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { AudioSourcePicker } from "@/components/AudioSourcePicker";
 import { TranslationModePicker } from "@/components/TranslationModePicker";
+import { RecorderFolderPicker } from "@/components/RecorderFolderPicker";
 import { LocalTranslatorDialog } from "@/components/LocalTranslatorDialog";
 import { ResumeRecordingBanner } from "@/components/ResumeRecordingBanner";
 import { BookmarkInRecording } from "@/components/BookmarkInRecording";
@@ -230,6 +231,10 @@ export function Recorder({
   // isn't available (see effect below).
   const [translationMode, setTranslationMode] = React.useState<TranslationMode>("local");
   const [localSetupOpen, setLocalSetupOpen] = React.useState(false);
+  // Which folder the next recording goes into. null = root ("未归档").
+  // RecorderFolderPicker rehydrates the last choice from localStorage
+  // on mount, so the user doesn't re-pick every recording.
+  const [selectedFolderId, setSelectedFolderId] = React.useState<string | null>(null);
 
   // Intercept "local" picks: probe Chrome's Translator API first. If the
   // language pair is ready, switch immediately. If the model is downloadable
@@ -499,7 +504,13 @@ export function Recorder({
         const sessionResp = await fetch("/api/transcription/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title, sourceLang, targetLang }),
+          body: JSON.stringify({
+            title,
+            sourceLang,
+            targetLang,
+            // null = root ("未归档"); chosen via RecorderFolderPicker.
+            folderId: selectedFolderId,
+          }),
         });
         if (!sessionResp.ok)
           throw new Error(`Failed to create session (${sessionResp.status})`);
@@ -1032,6 +1043,10 @@ export function Recorder({
             value={translationMode}
             onChange={handleTranslationModeChange}
           />
+          <RecorderFolderPicker
+            value={selectedFolderId}
+            onChange={setSelectedFolderId}
+          />
         </div>
 
         {/* Hero mic button */}
@@ -1300,7 +1315,7 @@ export function Recorder({
     {/* Right sidebar (lecsync-style 纪要 / 对话 / 文件). Hidden on <lg. */}
     <RecorderSidebar
       sessionId={sessionId}
-      folderId={null}
+      folderId={selectedFolderId}
       minutesSections={minutesSections}
       pendingSection={pendingSection}
       minutesStatus={minutesStatus}
