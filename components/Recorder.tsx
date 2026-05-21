@@ -1161,14 +1161,13 @@ export function Recorder({
           <button
             type="button"
             onClick={() => {
-              // No folders → start straight away (no point asking).
-              if (availableFolders.length === 0) {
-                void startRecording();
-                return;
-              }
-              // Has folders → ask first (matches lecsync's
-              // mic-click → folder-dialog flow). The dialog's
-              // handlers call startRecording({ folderIdOverride }).
+              // Always open the picker on mic-click — even with zero
+              // folders. The dialog renders "不归档（直接开始）" +
+              // "+ 新建文件夹" so a brand-new user discovers folders
+              // exist (and can create one inline) instead of just
+              // dropping straight into recording, which led to a
+              // "好像没有文件夹逻辑" report in prod.
+              // Dialog handlers call startRecording({ folderIdOverride }).
               setFolderPickerOpen(true);
             }}
             disabled={starting}
