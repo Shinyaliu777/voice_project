@@ -13,6 +13,7 @@ import {
   MoreHorizontal,
   Pause,
   Play,
+  Plus,
   Radio,
   RefreshCw,
   Share2,
@@ -39,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { LanguagePicker } from "@/components/LanguagePicker";
@@ -245,6 +247,51 @@ export function Recorder({
   // Folder picker dialog open state. Opens on mic-button click
   // (lecsync's `al → K(true)`), closes on pick / cancel.
   const [folderPickerOpen, setFolderPickerOpen] = React.useState(false);
+  // Inline "new folder" affordance inside the dialog.
+  const [creatingFolder, setCreatingFolder] = React.useState(false);
+  const [newFolderName, setNewFolderName] = React.useState("");
+  const [newFolderBusy, setNewFolderBusy] = React.useState(false);
+
+  const createFolderInline = React.useCallback(async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    setNewFolderBusy(true);
+    try {
+      const resp = await fetch("/api/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        if (resp.status === 409) {
+          toast.error("同名文件夹已存在");
+        } else {
+          toast.error(body?.error ?? `创建失败 (${resp.status})`);
+        }
+        return;
+      }
+      const created = (await resp.json()) as {
+        id: string;
+        name: string;
+        color: string | null;
+      };
+      setAvailableFolders((prev) => [
+        { id: created.id, name: created.name, color: created.color },
+        ...prev,
+      ]);
+      setSelectedFolderId(created.id);
+      setNewFolderName("");
+      setCreatingFolder(false);
+      toast.success("文件夹已创建");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "创建失败");
+    } finally {
+      setNewFolderBusy(false);
+    }
+  }, [newFolderName]);
 
   // Intercept "local" picks: probe Chrome's Translator API first. If the
   // language pair is ready, switch immediately. If the model is downloadable
@@ -1233,6 +1280,64 @@ export function Recorder({
                   ) : null}
                 </button>
               ))}
+
+              {/* Inline "create new folder" affordance — match lecsync's
+                  newFolder UX of letting you make a folder during the
+                  start-recording flow, not forcing a detour to the
+                  history page. */}
+              {!creatingFolder ? (
+                <button
+                  type="button"
+                  onClick={() => setCreatingFolder(true)}
+                  disabled={starting}
+                  className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span className="flex-1">新建文件夹</span>
+                </button>
+              ) : (
+                <div className="mt-1 flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50/60 p-2 dark:border-zinc-700 dark:bg-zinc-900/40">
+                  <Input
+                    autoFocus
+                    placeholder="文件夹名称"
+                    value={newFolderName}
+                    maxLength={120}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void createFolderInline();
+                      } else if (e.key === "Escape") {
+                        setCreatingFolder(false);
+                        setNewFolderName("");
+                      }
+                    }}
+                    disabled={newFolderBusy}
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => void createFolderInline()}
+                    disabled={newFolderBusy || !newFolderName.trim()}
+                  >
+                    {newFolderBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      "创建"
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setCreatingFolder(false);
+                      setNewFolderName("");
+                    }}
+                    disabled={newFolderBusy}
+                  >
+                    取消
+                  </Button>
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button
