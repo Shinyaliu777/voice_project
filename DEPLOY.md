@@ -278,20 +278,69 @@ npx prisma db execute --file prisma/migrations/<NEW_MIGRATION>/migration.sql --s
 npx prisma migrate resolve --applied <NEW_MIGRATION_DIRNAME>
 ```
 
-**有新增 env 变量时**：先 `git log -p ENV.md DEPLOY.md` 看新行，append 到 `.env` 再 build。今天（2026-05-21）新增 4 个，全部可选不填则禁用功能：
-- `NEXT_PUBLIC_POSTHOG_KEY` + `NEXT_PUBLIC_POSTHOG_HOST` — 埋点
+**有新增 env 变量时**：先 `git log -p ENV.md DEPLOY.md` 看新行，append 到 `.env` 再 build。最近新增的 env：
+- `NEXT_PUBLIC_POSTHOG_KEY` + `NEXT_PUBLIC_POSTHOG_HOST` — 埋点（2026-05-21）
 - `NEXT_PUBLIC_SONIOX_LANGUAGE_HINTS_STRICT` — Soniox 严格模式（默认 1，关闭设 "0"）
 - `REFERRAL_BONUS_MINUTES` — 推荐奖励分钟数（默认 60）
+- `ADMIN_EMAILS` — 管理后台允许名单（2026-05-22）。**强烈建议这次升级时设置**。逗号分隔邮箱（大小写不敏感），列表里的用户能看见 `/admin` 入口、对所有用户加分钟/封号/发兑换码。第一个 admin 必须靠这个 env 启动；之后可以在 UI 里给别的用户开 `User.isAdmin`。例：`ADMIN_EMAILS="myname@example.com,backup@example.com"`
 
 **HMR / dev 服务不会自动看见新 schema/env**：改完一定要 `npm run build` 重新启动进程；只重 reload 不够。
 
 **升级前必看的位置**：
 
-- `docs/CHANGELOG-*.md` — 每天大变更的归档。今天的是 `docs/CHANGELOG-2026-05-21.md`。
+- `docs/CHANGELOG-*.md` — 每天大变更的归档。最新：`docs/CHANGELOG-2026-05-22.md`。
 - `prisma/migrations/<latest>/migration.sql` — 看新 migration 是否会动现有数据
 - `git log -p --since="last deploy"` -- `.env*` `DEPLOY.md` README.md
 
 **回滚**：`git reset --hard <prev_commit>` + `npx prisma migrate resolve --rolled-back <migration_dir>`（如果 schema 没真的有破坏性改动，schema 不回滚也常能跑）+ rebuild。
+
+### 2026-05-22 升级要点（管理后台 + 兑换码 + 流水）
+
+这次的改动是**数据库 + 一个新 env**，下面这步缺一不可：
+
+```bash
+cd /opt/voice_project
+git pull
+npm ci
+npx prisma migrate deploy        # ← 必须，新增 3 张表 + User 3 列
+npx prisma generate
+
+# 关键：把你（运维）的邮箱填进去，否则没人能进 /admin
+# 多个 admin 用逗号分隔
+echo 'ADMIN_EMAILS="ops@example.com,boss@example.com"' >> .env
+
+npm run build
+# 平滑重启（pm2 reload / systemctl restart / docker compose up -d）
+```
+
+**新 schema**：3 张新表（`RedemptionCode` / `Redemption` / `MinuteTransaction`）+ User 加 3 列（`bonusMinutes` / `isAdmin` / `isSuspended`）。`MinuteTransaction` 是 append-only 流水，**不要写工具直接 UPDATE 它**——所有分钟变动走 `lib/billing.ts` 里的辅助函数。
+
+**Sanity check**：
+
+```bash
+# 表都创建出来了
+docker exec voice_postgres psql -U voice -d voice_project -c \
+  "\dt" | grep -E "RedemptionCode|Redemption|MinuteTransaction"
+
+# 你的账号已经在 admin 列表里
+docker exec voice_postgres psql -U voice -d voice_project -c \
+  "SELECT email, \"isAdmin\" FROM \"User\" WHERE email='ops@example.com';"
+
+# /admin 路由能起来（未登录返回 307 跳 login）
+curl -sI -o /dev/null -w "%{http_code}\n" https://voice.cyanclay.org/admin
+# 期望 307
+```
+
+**回滚 schema**：这次 migration 是纯加列加表，不动现有数据；回滚直接 drop 即可：
+
+```sql
+ALTER TABLE "User" DROP COLUMN "bonusMinutes", DROP COLUMN "isAdmin", DROP COLUMN "isSuspended";
+DROP TABLE "MinuteTransaction";
+DROP TABLE "Redemption";
+DROP TABLE "RedemptionCode";
+```
+
+然后 `npx prisma migrate resolve --rolled-back 20260522000000_admin_redemption_ledger`。
 
 ---
 

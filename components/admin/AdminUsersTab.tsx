@@ -59,6 +59,24 @@ export function AdminUsersTab() {
   const [query, setQuery] = React.useState("");
   const [pendingQuery, setPendingQuery] = React.useState("");
   const [grantTarget, setGrantTarget] = React.useState<AdminUserRow | null>(null);
+  // Current admin's own email — used to disable admin/suspend buttons
+  // on their own row (server refuses with 400 anyway, but a disabled
+  // button is friendlier than a toast pop after every click).
+  const [myEmail, setMyEmail] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me/billing")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.user?.email) setMyEmail(data.user.email);
+      })
+      .catch(() => {
+        /* non-fatal — guard still works server-side */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fetchPage = React.useCallback(
     async (q: string, cur: string | null) => {
@@ -261,40 +279,64 @@ export function AdminUsersTab() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setGrantTarget(u)}
-                        title="加/减分钟"
-                      >
-                        分钟
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => patchFlag(u, "isAdmin", !u.isAdmin)}
-                        title={u.isAdmin ? "撤销管理员" : "设为管理员"}
-                      >
-                        {u.isAdmin ? (
-                          <ShieldOff className="h-3.5 w-3.5" />
-                        ) : (
-                          <ShieldCheck className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={u.isSuspended ? "default" : "outline"}
-                        onClick={() =>
-                          patchFlag(u, "isSuspended", !u.isSuspended)
-                        }
-                        title={u.isSuspended ? "解封" : "封禁"}
-                      >
-                        {u.isSuspended ? (
-                          <UserPlus className="h-3.5 w-3.5" />
-                        ) : (
-                          <UserMinus className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
+                      {(() => {
+                        // Same-row guard: server refuses self-PATCH on
+                        // admin/suspend with 400. Disable here so a click
+                        // doesn't even fire — friendlier than a toast.
+                        const isSelf = !!myEmail && u.email === myEmail;
+                        return (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setGrantTarget(u)}
+                              title="加/减分钟"
+                            >
+                              分钟
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => patchFlag(u, "isAdmin", !u.isAdmin)}
+                              disabled={isSelf}
+                              title={
+                                isSelf
+                                  ? "不能改自己的管理员标记"
+                                  : u.isAdmin
+                                    ? "撤销管理员"
+                                    : "设为管理员"
+                              }
+                            >
+                              {u.isAdmin ? (
+                                <ShieldOff className="h-3.5 w-3.5" />
+                              ) : (
+                                <ShieldCheck className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={u.isSuspended ? "default" : "outline"}
+                              onClick={() =>
+                                patchFlag(u, "isSuspended", !u.isSuspended)
+                              }
+                              disabled={isSelf}
+                              title={
+                                isSelf
+                                  ? "不能封禁自己"
+                                  : u.isSuspended
+                                    ? "解封"
+                                    : "封禁"
+                              }
+                            >
+                              {u.isSuspended ? (
+                                <UserPlus className="h-3.5 w-3.5" />
+                              ) : (
+                                <UserMinus className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          </>
+                        );
+                      })()}
                     </div>
                   </td>
                 </tr>
