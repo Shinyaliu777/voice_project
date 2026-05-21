@@ -135,7 +135,8 @@ REFERRAL_BONUS_MINUTES="60"
 | 项 | 要求 |
 | --- | --- |
 | **入站** | HTTPS 443（建议）→ 反向代理 → Next.js :3000 |
-| **WebSocket** | 浏览器直连 `wss://stt-rt.soniox.com:443`，**不经过本服务**，反向代理无需特殊配置 |
+| **WebSocket（外部）** | 浏览器直连 `wss://stt-rt.soniox.com:443`，**不经过本服务**，反向代理无需特殊配置 |
+| **WebSocket（本服务）** | 直播分享走 `wss://<本服务域名>/ws/live/<token>?role=host\|viewer` — **nginx 必须给 `/ws/` 加 `Upgrade`/`Connection` headers** + 拉长 `proxy_read_timeout`，模板见下文 |
 | **Server-Sent Events** | `/api/live-share/[token]`、`/api/chat`、`/api/sessions/[id]/minutes/stream` —— 反向代理**必须关 buffering**，否则字幕不实时 |
 | **上传** | `/api/audio/upload-chunk` PUT，反向代理 `client_max_body_size ≥ 50m` |
 | **Host header** | 反向代理必须把原 `Host` 透传给 Next.js（`proxy_set_header Host $host;`），否则 Auth.js v5 会把 `localhost:3000` 当成入口，回调链路全错 |
@@ -235,13 +236,18 @@ vi .env    # 填上面 §3 的值
 
 # 5. 初始化数据库
 npx prisma generate
-npx prisma db push
+# 全新 DB：跑 migrations（推荐）
+npx prisma migrate deploy
+# 或：只在本地从零起的开发环境用，不要在生产用
+# npx prisma db push
 
 # 6. 构建
 npm run build
 
 # 7. 启动（生产）
 npm run start
+# = tsx server.ts (custom Node 服务器 + ws upgrade handler)
+# 监听 PORT (env, 默认 3000)。看到 `[server] ready on ...` 就 ok
 ```
 
 ### 后续升级
@@ -345,11 +351,30 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/next.config.ts ./next.config.ts
+# `npm run start` 走 `tsx server.ts` — 不再是 `next start`。
+# 所以 server.ts 入口 + lib/ 里的 ws-server / broadcaster / 一切
+# server.ts 间接依赖的东西都必须存在于 runner 镜像里。
+COPY --from=builder /app/server.ts ./server.ts
+COPY --from=builder /app/lib ./lib
+COPY --from=builder /app/auth.ts ./auth.ts
+COPY --from=builder /app/middleware.ts ./middleware.ts
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 RUN mkdir -p /data/uploads
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s CMD curl -fsS http://localhost:3000/api/health || exit 1
 CMD ["npm", "run", "start"]
 ```
+
+> ⚠️ Docker 启动后**首次**还需要手动跑一次数据库迁移（Dockerfile 里
+> 没自动应用，因为 build 阶段拿不到 prod DATABASE_URL）：
+>
+> ```bash
+> docker compose exec app npx prisma migrate deploy
+> # 或本项目早期混用过 db push 留下的 drift 情况：
+> docker compose exec app npx prisma db execute \
+>   --file prisma/migrations/<NEW>/migration.sql --schema prisma/schema.prisma
+> docker compose exec app npx prisma migrate resolve --applied <NEW>
+> ```
 
 `.dockerignore`：
 
