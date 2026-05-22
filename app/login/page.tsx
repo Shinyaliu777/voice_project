@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import LoginForm from "./LoginForm";
+import { InAppBrowserNotice } from "@/components/InAppBrowserNotice";
 import { auth } from "@/auth";
 
 export default async function LoginPage({
@@ -27,6 +28,9 @@ export default async function LoginPage({
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
           登录后开始录制 · 你的录音只你能看见
         </p>
+        <div className="mt-4">
+          <InAppBrowserNotice />
+        </div>
         <LoginForm
           callbackUrl={callbackUrl ?? "/dashboard"}
           hasGoogle={hasGoogle}
