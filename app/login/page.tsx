@@ -18,6 +18,7 @@ export default async function LoginPage({
     process.env.NODE_ENV !== "production" ||
     process.env.ALLOW_DEV_LOGIN === "1";
   const hasGoogle = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+  const hasMagicLink = !!process.env.RESEND_API_KEY;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-4 dark:bg-zinc-950">
@@ -34,6 +35,7 @@ export default async function LoginPage({
         <LoginForm
           callbackUrl={callbackUrl ?? "/dashboard"}
           hasGoogle={hasGoogle}
+          hasMagicLink={hasMagicLink}
           allowDevLogin={allowDevLogin}
           inviteCodeFromQuery={invite ?? null}
         />

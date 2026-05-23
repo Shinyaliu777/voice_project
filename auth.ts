@@ -1,6 +1,7 @@
 import NextAuth from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import Google from "next-auth/providers/google";
+import Resend from "next-auth/providers/resend";
 import Credentials from "next-auth/providers/credentials";
 import { cookies } from "next/headers";
 
@@ -14,7 +15,9 @@ import {
  * NextAuth (Auth.js v5) configuration.
  *
  * Providers:
- *   - Google OAuth (production)
+ *   - Google OAuth (production, real browsers)
+ *   - Resend magic-link email (production, ALL browsers including
+ *     in-app webviews where Google rejects with disallowed_useragent)
  *   - "credentials" with a single `email` field — DEV-MODE ONLY. Lets a
  *     developer "log in" as any email locally without setting up Google
  *     OAuth credentials. Disabled in production via the env flag.
@@ -34,19 +37,21 @@ const allowDevLogin =
 const hasGoogle =
   !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 
-// CRITICAL SAFETY GUARD: dev-login + Google together in prod is a
-// take-over-anyone attack — the dev-login credentials provider does an
-// upsert on email, so typing "victim@example.com" yields a session as
-// that user even if they originally signed up via Google. Bail at
-// import time if both flags are set in production; this can't be
-// recovered from at request time.
+const hasResend = !!process.env.RESEND_API_KEY;
+
+// CRITICAL SAFETY GUARD: dev-login + any real auth provider in prod is
+// an account-takeover vector — the dev-login credentials provider does
+// an upsert on email, so typing "victim@example.com" yields a session
+// as that user even if they originally signed up via Google or Resend.
+// Bail at import time if dev-login is on alongside any real provider
+// in production; this can't be recovered from at request time.
 if (
   process.env.NODE_ENV === "production" &&
-  hasGoogle &&
+  (hasGoogle || hasResend) &&
   process.env.ALLOW_DEV_LOGIN === "1"
 ) {
   throw new Error(
-    "[auth] Refusing to boot: ALLOW_DEV_LOGIN=1 with Google OAuth enabled in production is an account-takeover vector. Disable one."
+    "[auth] Refusing to boot: ALLOW_DEV_LOGIN=1 with a real auth provider (Google or Resend) enabled in production is an account-takeover vector. Disable dev-login."
   );
 }
 
@@ -69,6 +74,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             clientId: process.env.GOOGLE_CLIENT_ID,
             clientSecret: process.env.GOOGLE_CLIENT_SECRET,
             allowDangerousEmailAccountLinking: true,
+          }),
+        ]
+      : []),
+    ...(hasResend
+      ? [
+          // Magic-link email login. Universal fallback for users whose
+          // browser is rejected by Google OAuth (WeChat / QQ / DingTalk
+          // / Facebook / TikTok / etc. in-app webviews). The user enters
+          // their email; we send a one-click sign-in link via Resend.
+          // The link opens in the system default browser (escaping the
+          // in-app webview entirely), and a single click signs the user
+          // in. Free Resend tier (3000 emails/month) covers low traffic.
+          Resend({
+            apiKey: process.env.RESEND_API_KEY!,
+            from: process.env.EMAIL_FROM ?? "onboarding@resend.dev",
           }),
         ]
       : []),

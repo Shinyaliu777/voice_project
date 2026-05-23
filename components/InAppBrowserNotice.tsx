@@ -87,9 +87,10 @@ export function InAppBrowserNotice() {
             在 {state.appName ?? "当前浏览器"} 内无法使用 Google 登录
           </p>
           <p className="mt-1 text-xs leading-relaxed text-amber-800 dark:text-amber-200">
-            Google 出于安全原因禁止应用内嵌浏览器登录。请点击右上角
-            「<span className="font-mono">···</span>」菜单 →
-            「<b>在浏览器中打开</b>」（Safari / Chrome / Edge 都行）。
+            Google 出于安全原因禁止应用内嵌浏览器登录。<b>请改用上面的「邮箱登录」</b>——
+            点「发送链接」后到邮箱里点链接即可，任何浏览器都能用。<br />
+            或者：点右上角「<span className="font-mono">···</span>」→
+            「<b>在浏览器中打开</b>」（Safari / Chrome / Edge）再用 Google 登。
           </p>
           <button
             type="button"

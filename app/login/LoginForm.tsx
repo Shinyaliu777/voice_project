@@ -25,11 +25,17 @@ import { Input } from "@/components/ui/input";
 export default function LoginForm({
   callbackUrl,
   hasGoogle,
+  hasMagicLink,
   allowDevLogin,
   inviteCodeFromQuery,
 }: {
   callbackUrl: string;
   hasGoogle: boolean;
+  /** When true, RESEND_API_KEY is set on the server and we render the
+   *  email magic-link section. Universal fallback that works in every
+   *  browser, including the in-app webviews (WeChat / QQ / etc.) where
+   *  Google rejects OAuth with disallowed_useragent. */
+  hasMagicLink: boolean;
   allowDevLogin: boolean;
   /** Pre-fill from /login?invite=XXX (clicked from a copied invite
    *  link). Auto-validates on mount so a single click on the invite
@@ -37,6 +43,8 @@ export default function LoginForm({
   inviteCodeFromQuery: string | null;
 }) {
   const [email, setEmail] = React.useState("");
+  const [magicEmail, setMagicEmail] = React.useState("");
+  const [magicSent, setMagicSent] = React.useState(false);
   const [inviteCode, setInviteCode] = React.useState(
     inviteCodeFromQuery?.trim() ?? ""
   );
@@ -102,6 +110,32 @@ export default function LoginForm({
       await signIn("google", { callbackUrl });
     } catch {
       toast.error("Google 登录失败");
+      setBusy(false);
+    }
+  };
+
+  const handleMagicLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const addr = magicEmail.trim();
+    if (!addr || !/^.+@.+\..+$/.test(addr)) {
+      toast.error("请填一个合法邮箱");
+      return;
+    }
+    setBusy(true);
+    try {
+      // NextAuth's Resend provider redirects to its built-in
+      // verify-request page on success. Use redirect:false so we can
+      // show our own inline confirmation without a navigation.
+      const res = await signIn("resend", {
+        email: addr,
+        callbackUrl,
+        redirect: false,
+      });
+      if (res?.error) throw new Error(res.error);
+      setMagicSent(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "发送失败");
+    } finally {
       setBusy(false);
     }
   };
@@ -178,9 +212,63 @@ export default function LoginForm({
         </div>
       </details>
 
+      {hasMagicLink ? (
+        magicSent ? (
+          <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-700/60 dark:bg-emerald-950/30">
+            <p className="font-medium text-emerald-900 dark:text-emerald-100">
+              已发送登录链接到 {magicEmail}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-emerald-800 dark:text-emerald-200">
+              请去邮箱点击链接登录（10 分钟内有效）。没收到？
+              <button
+                type="button"
+                onClick={() => setMagicSent(false)}
+                className="ml-1 underline"
+              >
+                重发
+              </button>
+            </p>
+          </div>
+        ) : (
+          <form onSubmit={handleMagicLink} className="flex flex-col gap-2">
+            <label className="text-xs text-zinc-600 dark:text-zinc-300">
+              邮箱登录（任何浏览器都能用）
+            </label>
+            <div className="flex gap-2">
+              <Input
+                type="email"
+                placeholder="you@example.com"
+                value={magicEmail}
+                onChange={(e) => setMagicEmail(e.target.value)}
+                disabled={busy}
+                required
+              />
+              <Button
+                type="submit"
+                disabled={busy || !magicEmail.trim()}
+              >
+                发送链接
+              </Button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-zinc-400">
+              我们会发一封登录链接到这个邮箱。点击链接即可登录，无需密码。
+            </p>
+          </form>
+        )
+      ) : null}
+
+      {hasGoogle && hasMagicLink ? (
+        <div className="flex items-center gap-2 py-1 text-xs text-zinc-400">
+          <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+          <span>或</span>
+          <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+        </div>
+      ) : null}
+
       {hasGoogle ? (
         <Button
           type="button"
+          variant={hasMagicLink ? "outline" : "default"}
           className="w-full"
           onClick={handleGoogle}
           disabled={busy}
